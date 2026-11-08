@@ -5,6 +5,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js care.js google.js ./
+ARG ROSEE_VERSION=""
+ARG ROSEE_COMMIT=dev
+ARG ROSEE_BUILT=""
+ENV ROSEE_VERSION=$ROSEE_VERSION ROSEE_COMMIT=$ROSEE_COMMIT ROSEE_BUILT=$ROSEE_BUILT
 COPY public ./public
 RUN mkdir -p /data && chown -R node:node /data
 USER node

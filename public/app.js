@@ -27,7 +27,7 @@ async function api(path, opts = {}) {
   return data;
 }
 
-const state = { plants: [], settings: null, me: null };
+const state = { plants: [], settings: null, me: null, version: null };
 async function loadPlants() { state.plants = await api('/api/plants'); return state.plants; }
 async function loadSettings() { state.settings = await api('/api/settings'); return state.settings; }
 
@@ -407,7 +407,7 @@ async function renderDetail(id) {
             <div class="ring" role="img" aria-label="${esc(nextText(p))}">
               <svg viewBox="0 0 74 74"><circle class="track" cx="37" cy="37" r="31" fill="none" stroke-width="7"/>
                 <circle class="val" cx="37" cy="37" r="31" fill="none" stroke="${ringColor}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - Math.max(frac, 0.02))}"/></svg>
-              <div class="lbl"><b>${p.days_left <= 0 ? '0' : p.days_left} j</b><span>avant arrosage</span></div>
+              <div class="lbl">${p.days_left < 0 && p.last_watered_at ? `<b>+${-p.days_left} j</b><span>de retard</span>` : p.days_left <= 0 ? `<b>Auj.</b><span>à arroser</span>` : `<b>${p.days_left} j</b><span>avant arrosage</span>`}</div>
             </div>
           </div>
           <div class="d-actions">
@@ -721,7 +721,7 @@ async function renderCalendar() {
     html += `<button type="button" class="day ${cls}" data-key="${key}" aria-pressed="${key === dayKey(calSelected)}" aria-label="${esc(fmtLong.format(d))}, ${plural(ev.length, 'soin', 'soins')}">
       <span class="n">${d.getDate()}</span>
       <span class="dots">${ev.slice(0, 3).map((e) => `<i class="${e.type}"></i>`).join('')}</span>
-      <span class="pills">${ev.slice(0, 3).map((e) => `<span class="${e.type}">${e.type === 'done' ? '✓ ' : ''}${esc(e.name)}</span>`).join('')}${ev.length > 3 ? `<em>+${ev.length - 3}</em>` : ''}</span>
+      <span class="pills">${ev.slice(0, 3).map((e) => `<span class="${e.type}">${esc(e.name)}</span>`).join('')}${ev.length > 3 ? `<em>+${ev.length - 3}</em>` : ''}</span>
     </button>`;
   }
   $('#cal').innerHTML = html;
@@ -905,6 +905,8 @@ async function renderSettings() {
         <p class="muted" style="font-size:12.5px;margin:12px 0 0">La serre est partagée : tous les comptes autorisés voient les mêmes plantes. Chacun connecte son propre agenda et règle ses alertes.</p>
       </section>` : ''}
 
+      <section class="card" id="about"><div class="section-title"><h2>À propos</h2></div><div class="muted">Vérification…</div></section>
+
       <section class="card" id="ha-settings"><div class="section-title"><h2>Home Assistant</h2></div><div class="muted">Vérification…</div></section>
     </div>`;
 
@@ -923,12 +925,59 @@ async function renderSettings() {
   $('#unsub')?.addEventListener('click', async () => { await unsubscribe(); toast('Rappels désactivés sur cet appareil'); renderSettings(); });
   $('#test')?.addEventListener('click', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(r.sent ? 'Notification de test envoyée' : "Aucun appareil n'a reçu le test"); });
 
+  drawAbout();
   const ha = await api('/api/ha/status');
   updateSideHA(ha);
   const el = $('#ha-settings');
   if (el) el.innerHTML = `<div class="section-title"><h2>Home Assistant</h2><a href="#/capteurs">Capteurs</a></div>
     <div class="ha-card ${!ha.configured ? 'none' : ha.ok ? 'ok' : 'ko'}"><div class="ha-ico">${icon(!ha.configured ? 'sensor' : ha.ok ? 'check-circle' : 'alert')}</div>
     <div><b>${!ha.configured ? 'Non configuré' : ha.ok ? 'Connecté' : 'Injoignable'}</b><span>${!ha.configured ? 'Renseignez HA_URL et HA_TOKEN dans le fichier .env.' : ha.ok ? `Version ${esc(ha.version)}` : esc(ha.error)}</span></div></div>`;
+}
+
+// ---------- Version et mises à jour ----------
+async function loadVersion(refresh) {
+  try { state.version = await api(`/api/version${refresh ? '?refresh=1' : ''}`); } catch { state.version = null; }
+  updateSideVersion();
+  return state.version;
+}
+function updateSideVersion() {
+  const v = state.version;
+  const el = $('#side-version');
+  if (!el || !v) return;
+  const up = v.update?.status === 'available';
+  el.innerHTML = up
+    ? `<a class="side-update" href="#/parametres?section=about"><span class="status-dot warn"></span><span><b>Mise à jour disponible</b>v${esc(v.version)} · ${esc(v.short)}</span></a>`
+    : `<span class="side-ver">Rosée v${esc(v.version)}${v.commit !== 'dev' ? ` · ${esc(v.short)}` : ''}</span>`;
+  $$('[data-tab="settings"]').forEach((a) => a.classList.toggle('has-update', up));
+}
+async function drawAbout(refresh) {
+  const el = $('#about');
+  if (!el) return;
+  const v = state.version && !refresh ? state.version : await loadVersion(refresh);
+  if (!v || !$('#about')) return;
+  const u = v.update || {};
+  const built = v.built ? new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(v.built)) : null;
+  const status = {
+    current: `<span class="status-dot ok">À jour</span>`,
+    available: `<span class="status-dot warn">Mise à jour disponible${u.behind ? ` : ${plural(u.behind, 'modification', 'modifications')}` : ''}</span>`,
+    dev: `<span class="status-dot">Version de développement (pas de vérification)</span>`,
+    disabled: `<span class="status-dot">Vérification désactivée</span>`,
+    unknown: `<span class="status-dot off">Vérification impossible${u.error ? ` : ${esc(u.error)}` : ''}</span>`,
+  }[u.status] || '';
+  el.innerHTML = `<div class="section-title"><h2>À propos</h2><a href="https://github.com/${esc(v.repo)}/commits/main" target="_blank" rel="noopener">Historique</a></div>
+    <div class="rows">
+      <div class="row"><div class="txt"><b>Rosée ${esc(v.version)}</b><span>${v.commit === 'dev' ? 'Construite localement' : `Commit ${esc(v.short)}${built ? ` · construite le ${esc(built)}` : ''}`}</span></div></div>
+      <div class="row"><div class="txt"><b>Mises à jour</b><span>${status}</span></div>
+        ${u.status === 'dev' || u.status === 'disabled' ? '' : `<button class="btn secondary sm" type="button" id="check-update">${icon('refresh')}Vérifier</button>`}</div>
+    </div>
+    ${u.status === 'available' ? `<div class="update-box">
+      ${u.messages?.length ? `<b>Nouveautés</b><ul>${u.messages.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+      <b>Mettre à jour</b>
+      <p>Dans Portainer : <b>Stacks → rosee → Pull and redeploy</b>, avec <b>Re-pull image</b> coché. Vos plantes et réglages sont conservés.</p>
+    </div>` : ''}`;
+  $('#check-update', el)?.addEventListener('click', async (e) => { e.currentTarget.disabled = true; await drawAbout(true); toast(state.version?.update?.status === 'available' ? 'Une mise à jour est disponible' : state.version?.update?.status === 'current' ? 'Rosée est à jour' : 'Vérification impossible'); });
+  const qp = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (qp.get('section') === 'about') { el.scrollIntoView({ block: 'center' }); history.replaceState(null, '', '#/parametres'); }
 }
 
 // ---------- Google Agenda (par compte) ----------
@@ -1453,6 +1502,7 @@ $('#global-q').addEventListener('input', (e) => {
     await Promise.all([loadPlants(), loadSettings()]);
     await render();
     api('/api/ha/status').then(updateSideHA).catch(() => {});
+    loadVersion();
   } catch {
     view.innerHTML = `<div class="card empty"><h2>Serveur injoignable</h2><p>Vérifiez que vous êtes sur le réseau de la maison ou connecté au VPN, puis réessayez.</p><button class="btn" type="button" onclick="location.reload()">Réessayer</button></div>`;
   }

@@ -22,6 +22,12 @@ const AUTH_USER = process.env.BASIC_AUTH_USER || '';
 const AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
 const HA_URL = (process.env.HA_URL || '').replace(/\/+$/, '');
 const HA_TOKEN = process.env.HA_TOKEN || '';
+// Version en cours (renseignée par le build GitHub Actions)
+const PKG_VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+const BUILD = { version: process.env.ROSEE_VERSION || PKG_VERSION, commit: process.env.ROSEE_COMMIT || 'dev', built: process.env.ROSEE_BUILT || null };
+const REPO = process.env.ROSEE_REPO || 'Sir22io/rosee';
+const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0';
+const GITHUB_API = (process.env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/, '');
 const FEED_BASE_URL = (process.env.FEED_BASE_URL || '').replace(/\/+$/, '');
 // Photos de référence (iNaturalist). PHOTO_LOOKUP=0 pour désactiver la recherche automatique.
 const INAT_API = (process.env.INAT_API_URL || 'https://api.inaturalist.org/v1').replace(/\/+$/, '');
@@ -431,7 +437,7 @@ if (AUTH_USER && AUTH_PASS) {
 }
 
 app.use(express.json({ limit: '100kb' }));
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, version: BUILD.version, commit: BUILD.commit.slice(0, 7) }));
 // Comptes Google : routes /auth/* et /api/me, puis garde sur l'API et les photos
 const google = setupGoogle(app, { db, TZ, DATA_DIR, wrap, allPlants, upcomingDates, localDateKey, addDaysKey });
 app.use(['/api', '/photos'], google.requireAuth);
@@ -801,6 +807,57 @@ app.get('/api/photo-search', wrap(async (req, res) => {
   }
 }));
 
+// ---------- Version et mises à jour ----------
+// Compare le commit de ce conteneur au dernier commit dont l'image a été construite avec succès,
+// pour ne signaler une mise à jour que lorsqu'une image plus récente existe vraiment.
+let updateCache = { at: 0, data: null };
+async function ghFetch(p) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(GITHUB_API + p, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Rosee-update-check' }, signal: ctrl.signal });
+    if (!res.ok) throw new Error(res.status === 403 ? 'limite de requêtes GitHub atteinte, réessayez plus tard' : `GitHub a répondu ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function checkUpdate(force) {
+  if (!UPDATE_CHECK) return { status: 'disabled' };
+  if (BUILD.commit === 'dev') return { status: 'dev' };
+  const ttl = force ? 60_000 : 6 * 3600_000;
+  if (updateCache.data && Date.now() - updateCache.at < ttl) return updateCache.data;
+  let data;
+  try {
+    const runs = await ghFetch(`/repos/${REPO}/actions/workflows/docker.yml/runs?branch=main&status=success&per_page=1`);
+    const run = runs.workflow_runs?.[0];
+    if (!run) data = { status: 'unknown', error: 'Aucune image publiée trouvée' };
+    else if (run.head_sha === BUILD.commit) data = { status: 'current', latest: { commit: run.head_sha, date: run.updated_at } };
+    else {
+      let behind = null, messages = [];
+      try {
+        const cmp = await ghFetch(`/repos/${REPO}/compare/${BUILD.commit}...${run.head_sha}`);
+        behind = cmp.ahead_by;
+        messages = (cmp.commits || []).slice(-5).reverse().map((c) => String(c.commit?.message || '').split('\n')[0].slice(0, 120));
+      } catch {}
+      data = behind === 0 ? { status: 'current', latest: { commit: run.head_sha, date: run.updated_at } }
+        : { status: 'available', latest: { commit: run.head_sha, date: run.updated_at }, behind, messages };
+    }
+  } catch (e) {
+    data = { status: 'unknown', error: e.name === 'AbortError' ? 'GitHub ne répond pas' : e.message };
+  }
+  updateCache = { at: Date.now(), data };
+  return data;
+}
+if (UPDATE_CHECK && BUILD.commit !== 'dev') {
+  setTimeout(() => checkUpdate(), 20_000);
+  setInterval(() => checkUpdate(), 6 * 3600_000);
+}
+app.get('/api/version', wrap(async (req, res) => {
+  const update = await checkUpdate(req.query.refresh === '1');
+  res.json({ ...BUILD, short: BUILD.commit.slice(0, 7), repo: REPO, update, checked_at: updateCache.at ? new Date(updateCache.at).toISOString() : null });
+}));
+
 // ---------- Réglages ----------
 app.get('/api/settings', (_req, res) =>
   res.json({
@@ -853,4 +910,4 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Erreur serveur' });
 });
 
-app.listen(PORT, () => console.log(`[rosee] en écoute sur :${PORT} (TZ ${TZ}, données ${DATA_DIR}, Home Assistant ${haConfigured() ? HA_URL : 'non configuré'})`));
+app.listen(PORT, () => console.log(`[rosee] v${BUILD.version} (${BUILD.commit.slice(0, 7)}) en écoute sur :${PORT} (TZ ${TZ}, données ${DATA_DIR}, Home Assistant ${haConfigured() ? HA_URL : 'non configuré'})`));
