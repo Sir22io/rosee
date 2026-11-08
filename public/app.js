@@ -267,7 +267,7 @@ function nextUp() {
 
 function taskRow(p) {
   const late = p.last_watered_at && p.days_left < 0;
-  const sub = [p.room, late ? `<span class="late">${esc(nextText(p))}</span>` : p.last_watered_at ? `arrosée ${relPast(new Date(p.last_watered_at))}` : 'jamais arrosée'].filter(Boolean).join(' · ');
+  const sub = [p.room, p.care?.water ? esc(p.care.water.short.toLowerCase()) : '', late ? `<span class="late">${esc(nextText(p))}</span>` : p.last_watered_at ? `arrosée ${relPast(new Date(p.last_watered_at))}` : 'jamais arrosée'].filter(Boolean).join(' · ');
   return `<li class="task" data-id="${p.id}">
     ${thumb(p)}
     <a class="t-body" href="#/plante/${p.id}"><div class="t-title">Arroser ${esc(p.name)}</div><div class="t-sub">${sub}</div></a>
@@ -429,6 +429,7 @@ async function renderDetail(id) {
             <button class="btn" type="button" id="water">${icon('drop')}Arroser</button>
             <button class="icon-btn more-btn" type="button" id="more" aria-label="Plus d'actions" style="width:46px;height:46px">${icon('more')}</button>
           </div>
+          ${p.care?.water ? `<p class="water-hint">${icon('drop')}<span><b>${esc(p.care.water.short)}</b> · ${esc(p.care.water.text.split(' : ')[1] || p.care.water.text)}</span></p>` : ''}
           <div class="d-quick">
             <button class="btn secondary" type="button" data-act="date">${icon('calendar')}Arrosée un autre jour</button>
             <button class="btn secondary" type="button" data-act="edit">${icon('edit')}Modifier la fiche</button>
@@ -549,6 +550,10 @@ function careCard(p) {
       <span>${icon('thermo')}${c.temp[0]}–${c.temp[1]} °C</span>
       <span>${icon('air')}Air ≥ ${c.humidity} %</span>
     </div>
+    ${c.water ? `<div class="how-water">
+      <div><span class="hw-label">${icon('drop')}Combien</span><b>${esc(c.water.short)}</b><p>${esc(c.water.text)}</p></div>
+      ${c.dry ? `<div><span class="hw-label">${icon('clock')}Quand recommencer</span><p>${esc(c.dry)}</p></div>` : ''}
+    </div>` : ''}
     <ul class="care-tips">${c.tips.map((t) => `<li>${icon('check')}<span>${esc(t)}</span></li>`).join('')}</ul>
     ${diff ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Vos réglages diffèrent de ces repères : c'est normal si votre intérieur est plus chaud, plus sec ou plus lumineux. Ils restent modifiables dans la fiche.</p>` : ''}
     <p class="muted" style="font-size:11.5px;margin:8px 0 0">Repères généraux pour une culture en intérieur : vérifiez toujours la terre au doigt avant d'arroser.</p>
@@ -1364,6 +1369,7 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
             <span>${icon('drop')}Été : ${c.summer} j · hiver : ${c.winter} j</span>
             <span>${icon('sun')}${esc(lightLabel(c.light))}</span>
             <span>${icon('thermo')}${c.temp[0]}–${c.temp[1]} °C</span>
+            ${c.water ? `<span>${icon('drop')}${esc(c.water.short)}</span>` : ''}
           </div>
           ${same ? '<span class="reco-done">Réglages appliqués</span>' : '<button type="button" class="btn sm reco-apply">Appliquer ces réglages</button>'}`;
         recoEl.querySelector('.reco-apply')?.addEventListener('click', () => { touched = true; applyCare(c); });

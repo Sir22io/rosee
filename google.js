@@ -271,7 +271,7 @@ export function setupGoogle(app, ctx) {
         const late = offset === 0 && p.days_left < 0;
         const body = {
           summary: `💧 Arroser ${p.name}${late ? ' (en retard)' : ''}`,
-          description: [p.room && `Pièce : ${p.room}`, `Rythme actuel : tous les ${interval} jours.`, PUBLIC_URL && `${PUBLIC_URL}/#/plante/${p.id}`].filter(Boolean).join('\n'),
+          description: [p.room && `Pièce : ${p.room}`, p.care?.water && `${p.care.water.short}. ${p.care.water.text}`, `Rythme actuel : tous les ${interval} jours.`, PUBLIC_URL && `${PUBLIC_URL}/#/plante/${p.id}`].filter(Boolean).join('\n'),
           ...(p.room ? { location: p.room } : {}),
           start: { dateTime: `${day}T${s.time}:00`, timeZone: TZ },
           end: { dateTime: `${day}T${plusMinutes(s.time, s.duration)}:00`, timeZone: TZ },

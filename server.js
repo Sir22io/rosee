@@ -419,7 +419,7 @@ app.get('/cal/:token.ics', wrap(async (req, res) => {
         `DTSTART;VALUE=DATE:${icsDate(key)}`, `DTEND;VALUE=DATE:${icsDate(addDaysKey(key, 1))}`,
         `SUMMARY:${icsEscape(`💧 Arroser ${p.name}`)}`,
         ...(p.room ? [`LOCATION:${icsEscape(p.room)}`] : []),
-        `DESCRIPTION:${icsEscape(`Rythme actuel : tous les ${interval} jours.`)}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
+        `DESCRIPTION:${icsEscape([p.care?.water && `${p.care.water.short}. ${p.care.water.text}`, `Rythme actuel : tous les ${interval} jours.`].filter(Boolean).join('\n'))}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
     }
   }
   lines.push('END:VCALENDAR');
