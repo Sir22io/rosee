@@ -38,7 +38,7 @@ Mise à jour : `git pull && docker compose pull && docker compose up -d`.
    - Reference : `refs/heads/main`
    - Compose path : `portainer-stack.yml`
    - Dépôt privé : active *Authentication*, avec un jeton qui a le droit `repo`.
-3. **Environment variables** : renseigne `VAPID_SUBJECT`, `HA_URL`, `HA_TOKEN` et, si besoin, `FEED_BASE_URL`.
+3. **Environment variables** : renseigne `VAPID_SUBJECT`, `HA_URL`, `HA_TOKEN` et, si besoin, `FEED_BASE_URL`. Si le port 3000 de l'hôte est déjà pris, ajoute `ROSEE_PORT` avec un autre port (ex. `3010`).
 4. **Mises à jour automatiques** (facultatif) : active *GitOps updates* (polling 5 min) avec *Re-pull image*.
 
 Les données sont dans le volume Docker `rosee-data`. Sauvegarde ce volume.
