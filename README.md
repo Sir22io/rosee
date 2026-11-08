@@ -30,6 +30,19 @@ docker compose pull && docker compose up -d
 
 Mise à jour : `git pull && docker compose pull && docker compose up -d`.
 
+### Option Portainer
+
+1. **Registre** : seulement si l'image est privée. Va dans *Registries → Add registry → Custom registry*, avec l'URL `ghcr.io`, l'utilisateur `Sir22io` et comme mot de passe un jeton GitHub (classic) qui n'a que le droit `read:packages`.
+2. **Stack** : va dans *Stacks → Add stack → Repository*.
+   - Repository URL : `https://github.com/Sir22io/rosee`
+   - Reference : `refs/heads/main`
+   - Compose path : `portainer-stack.yml`
+   - Dépôt privé : active *Authentication*, avec un jeton qui a le droit `repo`.
+3. **Environment variables** : renseigne `VAPID_SUBJECT`, `HA_URL`, `HA_TOKEN` et, si besoin, `FEED_BASE_URL`.
+4. **Mises à jour automatiques** (facultatif) : active *GitOps updates* (polling 5 min) avec *Re-pull image*.
+
+Les données sont dans le volume Docker `rosee-data`. Sauvegarde ce volume.
+
 ### Option B : construire sur l'hôte
 
 Même chose sans `docker login` : `git pull && docker compose up -d --build`.
