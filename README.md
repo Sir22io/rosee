@@ -163,6 +163,17 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | vides | Authentification HTTP. Le flux `/cal/` en est exempté : il est protégé par son jeton |
 | `PORT` / `DATA_DIR` | `3000` / `/data` | Port d'écoute et dossier des données |
 
+## Tests
+
+`npm test` lance une trentaine de tests automatiques : API, saisons, capteurs Home Assistant, photos de référence et protection contre les URL piégées, flux d'agenda, connexion Google et synchronisation de l'agenda (services simulés), export et restauration, en-têtes de sécurité et vérifications de l'interface. Dans GitHub Actions, ils passent avant chaque construction : **si un test échoue, aucune image ni release n'est publiée**.
+
+## Sécurité et sauvegardes
+
+- **En-têtes** : politique de sécurité du contenu stricte (aucun script en ligne), `X-Frame-Options`, `nosniff`, `Referrer-Policy`.
+- **Limitation de débit** : 600 requêtes/min par adresse sur l'API, 30/min sur la connexion et l'agenda (`RATE_LIMIT=0` pour désactiver). L'adresse réelle n'est lue dans `X-Forwarded-For` que si la requête vient d'un proxy du réseau local (`TRUST_PROXY` pour changer).
+- **Sauvegarde automatique** de la base une fois par jour dans `data/backups/` (14 conservées, `BACKUP_KEEP`), et juste avant chaque restauration.
+- **Export et restauration** dans Paramètres → Sauvegarde : un fichier JSON avec les plantes, les photos et l'historique.
+
 ## Versions et mises à jour
 
 - La version est celle de `package.json`. **Tout est automatique** : à chaque push sur `main`, GitHub Actions construit et publie l'image (`latest` et `sha-<commit>`). Si la version de `package.json` est nouvelle, il crée aussi le tag `vX.Y.Z`, la release GitHub (notes générées) et les étiquettes d'image `X.Y.Z` et `X.Y`. Pour publier une version, il suffit d'augmenter le numéro dans `package.json`.

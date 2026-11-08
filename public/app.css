@@ -622,6 +622,9 @@ fieldset.field { border: 0; padding: 0; margin-inline: 0; min-width: 0; }
 .water-hint svg { color: var(--teal); font-size: 16px; margin-top: 2px; }
 .water-hint b { color: var(--ink); }
 
+.file-btn { position: relative; overflow: hidden; cursor: pointer; }
+.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
 /* Version */
 #side-version { margin-top: 8px; padding: 0 12px; font-size: 12px; color: var(--ink); font-weight: 600; }
 #side-version .side-update { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 0 -12px; border-radius: 14px; background: var(--orange-soft); color: var(--ink); }

@@ -994,6 +994,17 @@ async function renderSettings() {
         <p class="muted" style="font-size:12.5px;margin:12px 0 0">La serre est partagée : tous les comptes autorisés voient les mêmes plantes. Chacun connecte son propre agenda et règle ses alertes.</p>
       </section>` : ''}
 
+      <section class="card" id="backup">
+        <div class="section-title"><h2>Sauvegarde</h2></div>
+        <div class="rows">
+          <div class="row"><div class="txt"><b>Sauvegardes automatiques</b><span id="backup-info">…</span></div></div>
+          <div class="row"><div class="txt"><b>Exporter</b><span>Plantes, photos et historique dans un fichier</span></div>
+            <a class="btn secondary sm" href="/api/export" download>${icon('link')}Télécharger</a></div>
+          <div class="row"><div class="txt"><b>Restaurer</b><span>Remplace les données actuelles par un export</span></div>
+            <label class="btn secondary sm file-btn">Choisir un fichier<input type="file" id="import-file" accept="application/json,.json"></label></div>
+        </div>
+      </section>
+
       <section class="card" id="about"><div class="section-title"><h2>À propos</h2></div><div class="muted">Vérification…</div></section>
 
       <section class="card" id="ha-settings"><div class="section-title"><h2>Home Assistant</h2></div><div class="muted">Vérification…</div></section>
@@ -1015,6 +1026,35 @@ async function renderSettings() {
   $('#test')?.addEventListener('click', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(r.sent ? 'Notification de test envoyée' : "Aucun appareil n'a reçu le test"); });
 
   drawAbout();
+  api('/api/backups').then((b) => {
+    const el = $('#backup-info');
+    if (!el) return;
+    const last = b.backups[0];
+    el.textContent = last ? `${plural(b.backups.length, 'sauvegarde conservée', 'sauvegardes conservées')} sur ${b.keep}, la dernière ${relAgo(last.at)}` : `Une par jour, ${b.keep} conservées`;
+  }).catch(() => {});
+  $('#import-file').onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    openSheet(`<div class="sheet-inner">
+      <div class="sheet-head"><h2 id="sheet-title">Restaurer cet export ?</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+      <div class="sheet-body"><p class="muted" style="margin:0">Toutes les plantes et l'historique actuels seront remplacés par le contenu de « ${esc(f.name)} ». Une sauvegarde de l'état actuel est faite juste avant.</p></div>
+      <div class="sheet-foot" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <button class="btn secondary" type="button" data-close>Annuler</button>
+        <button class="btn solid-danger" type="button" id="import-ok">Restaurer</button></div></div>`, (root) => {
+      $$('[data-close]', root).forEach((b) => (b.onclick = () => { sheet.close(); e.target.value = ''; }));
+      $('#import-ok', root).onclick = async (ev) => {
+        ev.currentTarget.disabled = true; ev.currentTarget.textContent = 'Restauration…';
+        try {
+          const data = JSON.parse(await f.text());
+          const r = await api('/api/import', { method: 'POST', json: data });
+          await loadPlants(); sheet.close();
+          toast(`${plural(r.plants, 'plante restaurée', 'plantes restaurées')}`);
+          renderSettings();
+        } catch (err) { sheet.close(); toast(err instanceof SyntaxError ? 'Fichier illisible' : err.message); }
+        e.target.value = '';
+      };
+    });
+  };
   const ha = await api('/api/ha/status');
   updateSideHA(ha);
   const el = $('#ha-settings');
@@ -1594,6 +1634,7 @@ $('#global-q').addEventListener('input', (e) => {
     api('/api/ha/status').then(updateSideHA).catch(() => {});
     loadVersion();
   } catch {
-    view.innerHTML = `<div class="card empty"><h2>Serveur injoignable</h2><p>Vérifiez que vous êtes sur le réseau de la maison ou connecté au VPN, puis réessayez.</p><button class="btn" type="button" onclick="location.reload()">Réessayer</button></div>`;
+    view.innerHTML = `<div class="card empty"><h2>Serveur injoignable</h2><p>Vérifiez que vous êtes sur le réseau de la maison ou connecté au VPN, puis réessayez.</p><button class="btn" type="button" id="retry">Réessayer</button></div>`;
+    $('#retry').addEventListener('click', () => location.reload());
   }
 })();

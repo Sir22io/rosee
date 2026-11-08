@@ -385,7 +385,58 @@ setInterval(async () => {
 // ---------- Application HTTP ----------
 const app = express();
 app.disable('x-powered-by');
-app.set('trust proxy', true);
+// Ne croire X-Forwarded-For que d'un proxy local (NPM sur le réseau privé), pas d'un client qui l'inventerait
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback, linklocal, uniquelocal');
+
+// ---------- En-têtes de sécurité ----------
+const IMG_HOSTS = [...PHOTO_HOSTS].map((h) => `https://${h}${process.env.INAT_PHOTO_HOSTS ? ` http://${h}:*` : ''}`).join(' ');
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'", // attributs style="--…" utilisés pour les jauges et graphiques
+  `img-src 'self' data: blob: ${IMG_HOSTS}`,
+  "font-src 'self'",
+  "connect-src 'self'",
+  "manifest-src 'self'",
+  "worker-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join('; ');
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': CSP,
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin',
+    'X-Frame-Options': 'DENY',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=(self), payment=()',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+  });
+  next();
+});
+
+// ---------- Limitation de débit (par adresse IP, en mémoire) ----------
+function rateLimit({ windowMs, max }) {
+  const hits = new Map();
+  setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, windowMs).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = req.ip || 'inconnu';
+    let h = hits.get(key);
+    if (!h || h.reset < now) { h = { n: 0, reset: now + windowMs }; hits.set(key, h); }
+    if (++h.n > max) {
+      res.set('Retry-After', String(Math.ceil((h.reset - now) / 1000)));
+      return res.status(429).json({ error: 'Trop de requêtes, réessayez dans un instant' });
+    }
+    next();
+  };
+}
+const RL = process.env.RATE_LIMIT !== '0';
+if (RL) {
+  app.use(['/auth', '/cal'], rateLimit({ windowMs: 60_000, max: 30 }));
+  app.use('/api', rateLimit({ windowMs: 60_000, max: 600 }));
+}
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ---------- Flux d'agenda (.ics) pour Google Agenda, Apple Calendrier… ----------
@@ -437,7 +488,8 @@ if (AUTH_USER && AUTH_PASS) {
   });
 }
 
-app.use(express.json({ limit: '100kb' }));
+const jsonSmall = express.json({ limit: '100kb' });
+app.use((req, res, next) => (req.path === '/api/import' ? next() : jsonSmall(req, res, next)));
 app.get('/api/health', (_req, res) => res.json({ ok: true, version: BUILD.version, commit: BUILD.commit.slice(0, 7) }));
 // Comptes Google : routes /auth/* et /api/me, puis garde sur l'API et les photos
 const google = setupGoogle(app, { db, TZ, DATA_DIR, wrap, allPlants, upcomingDates, localDateKey, addDaysKey });
@@ -857,6 +909,95 @@ if (UPDATE_CHECK && BUILD.commit !== 'dev') {
 app.get('/api/version', wrap(async (req, res) => {
   const update = await checkUpdate(req.query.refresh === '1');
   res.json({ ...BUILD, short: BUILD.commit.slice(0, 7), repo: REPO, update, checked_at: updateCache.at ? new Date(updateCache.at).toISOString() : null });
+}));
+
+// ---------- Sauvegardes, export et import ----------
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+const BACKUP_KEEP = Math.max(1, parseInt(process.env.BACKUP_KEEP, 10) || 14);
+async function backupDb(reason = 'quotidienne') {
+  const file = path.join(BACKUP_DIR, `rosee-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}${reason === 'quotidienne' ? '' : `-${reason}`}.db`);
+  await db.backup(file);
+  const all = fs.readdirSync(BACKUP_DIR).filter((f) => /^rosee-.*\.db$/.test(f)).sort();
+  for (const f of all.slice(0, Math.max(0, all.length - BACKUP_KEEP))) fs.rmSync(path.join(BACKUP_DIR, f), { force: true });
+  return path.basename(file);
+}
+// Une sauvegarde par jour (au démarrage si la dernière date de plus de 20 h)
+function lastBackupAge() {
+  const all = fs.readdirSync(BACKUP_DIR).filter((f) => /^rosee-.*\.db$/.test(f));
+  if (!all.length) return Infinity;
+  return Math.min(...all.map((f) => Date.now() - fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs));
+}
+setTimeout(() => { if (lastBackupAge() > 20 * 3600_000) backupDb().catch((e) => console.error('[rosee] sauvegarde impossible :', e.message)); }, 10_000).unref();
+setInterval(() => backupDb().catch((e) => console.error('[rosee] sauvegarde impossible :', e.message)), 24 * 3600_000).unref();
+
+app.get('/api/backups', (_req, res) => {
+  const list = fs.readdirSync(BACKUP_DIR).filter((f) => /^rosee-.*\.db$/.test(f)).sort().reverse()
+    .map((f) => ({ name: f, size: fs.statSync(path.join(BACKUP_DIR, f)).size, at: fs.statSync(path.join(BACKUP_DIR, f)).mtime }));
+  res.json({ keep: BACKUP_KEEP, backups: list });
+});
+
+const EXPORT_COLS = ['name', 'species', 'room', 'light', 'interval_days', 'interval_winter', 'seasonal', 'notes', 'sensors', 'targets', 'photo_source', 'photo_credit', 'created_at'];
+app.get('/api/export', (req, res) => {
+  const withPhotos = req.query.photos !== '0';
+  const plants = db.prepare('SELECT * FROM plants ORDER BY id').all().map((p) => {
+    const o = { ref: p.id };
+    for (const c of EXPORT_COLS) o[c] = p[c];
+    if (withPhotos && p.photo) {
+      try { o.photo_data = fs.readFileSync(path.join(PHOTO_DIR, path.basename(p.photo))).toString('base64'); } catch {}
+    }
+    return o;
+  });
+  const waterings = db.prepare('SELECT plant_id AS plant_ref, at, note FROM waterings ORDER BY at').all();
+  const settings = Object.fromEntries(db.prepare("SELECT key, value FROM settings WHERE key IN ('reminder_enabled','reminder_time','user_name')").all().map((r) => [r.key, r.value]));
+  res.set('Content-Disposition', `attachment; filename="rosee-export-${localDateKey()}.json"`);
+  res.json({ app: 'rosee', format: 1, version: BUILD.version, exported_at: new Date().toISOString(), plants, waterings, settings });
+});
+
+// Restauration : remplace toutes les plantes et l'historique (sauvegarde automatique juste avant)
+app.post('/api/import', express.json({ limit: '80mb' }), wrap(async (req, res) => {
+  const d = req.body || {};
+  if (d.app !== 'rosee' || d.format !== 1 || !Array.isArray(d.plants) || !Array.isArray(d.waterings)) return res.status(400).json({ error: 'Fichier non reconnu : utilisez un export de Rosée' });
+  if (d.plants.length > 2000 || d.waterings.length > 200000) return res.status(400).json({ error: 'Fichier trop volumineux' });
+  const backup = await backupDb('avant-import');
+  // Photos d'abord (hors transaction), en les ré-encodant : un fichier piégé ne passe pas
+  const photos = new Map();
+  for (const p of d.plants) {
+    if (typeof p.photo_data !== 'string' || !p.photo_data) continue;
+    try { photos.set(p.ref, await savePhoto({ buffer: Buffer.from(p.photo_data, 'base64') })); } catch {}
+  }
+  const old = db.prepare('SELECT photo FROM plants WHERE photo IS NOT NULL').all().map((r) => r.photo);
+  const str = (v, n) => String(v ?? '').slice(0, n);
+  const insertPlant = db.prepare(`INSERT INTO plants(name,species,room,light,interval_days,interval_winter,seasonal,notes,sensors,targets,photo,photo_source,photo_credit,photo_lookup,created_at)
+    VALUES(@name,@species,@room,@light,@interval_days,@interval_winter,@seasonal,@notes,@sensors,@targets,@photo,@photo_source,@photo_credit,1,@created_at)`);
+  const insertW = db.prepare('INSERT INTO waterings(plant_id, at, note) VALUES(?,?,?)');
+  const refMap = new Map();
+  db.transaction(() => {
+    db.prepare('DELETE FROM plants').run();
+    for (const p of d.plants) {
+      if (!str(p.name, 80).trim()) continue;
+      const iv = Math.max(1, Math.min(120, parseInt(p.interval_days, 10) || 7));
+      const info = insertPlant.run({
+        name: str(p.name, 80), species: str(p.species, 120), room: str(p.room, 60), light: str(p.light, 30),
+        interval_days: iv, interval_winter: Number.isFinite(+p.interval_winter) && p.interval_winter !== null ? Math.max(iv, Math.min(180, +p.interval_winter)) : null,
+        seasonal: p.seasonal === 0 ? 0 : 1, notes: str(p.notes, 4000),
+        sensors: JSON.stringify(parseJSON(p.sensors, {})), targets: JSON.stringify(parseJSON(p.targets, {})),
+        photo: photos.get(p.ref) || null, photo_source: photos.get(p.ref) ? str(p.photo_source || 'user', 10) : null,
+        photo_credit: photos.get(p.ref) && p.photo_credit ? str(p.photo_credit, 600) : null,
+        created_at: str(p.created_at, 30) || new Date().toISOString().slice(0, 19).replace('T', ' '),
+      });
+      refMap.set(p.ref, info.lastInsertRowid);
+    }
+    for (const w of d.waterings) {
+      const id = refMap.get(w.plant_ref);
+      const at = new Date(w.at);
+      if (id && !isNaN(at)) insertW.run(id, at.toISOString(), str(w.note, 500));
+    }
+    for (const [k, v] of Object.entries(d.settings || {})) if (['reminder_enabled', 'reminder_time', 'user_name'].includes(k)) setSetting(k, str(v, 40));
+  })();
+  for (const f of old) removePhoto(f);
+  google.scheduleSync();
+  res.json({ ok: true, plants: refMap.size, waterings: db.prepare('SELECT COUNT(*) c FROM waterings').get().c, backup });
 }));
 
 // ---------- Réglages ----------

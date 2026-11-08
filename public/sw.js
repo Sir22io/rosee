@@ -1,6 +1,6 @@
 // Rosée — service worker : cache de l'interface + notifications push.
-const CACHE = 'rosee-v3';
-const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/manifest.webmanifest', '/fonts/manrope.woff2', '/icons/icon.svg', '/icons/icon-192.png'];
+const CACHE = 'rosee-v4';
+const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/theme.js', '/manifest.webmanifest', '/fonts/manrope.woff2', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

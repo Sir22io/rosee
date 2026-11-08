@@ -1,12 +1,14 @@
 name: Image Docker
 
 # À chaque push sur main :
+#  0. lance les tests (npm test) : en cas d'échec, rien n'est publié ;
 #  1. lit la version de package.json ;
 #  2. si le tag vX.Y.Z n'existe pas encore, crée le tag et la release GitHub (notes générées) ;
 #  3. construit l'image et la publie : latest, sha-xxxxxxx et, pour une nouvelle version, X.Y.Z et X.Y.
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -18,7 +20,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Les tests passent d'abord : si l'un échoue, aucune image ni release n'est publiée.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
   build:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
