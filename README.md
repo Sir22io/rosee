@@ -56,6 +56,14 @@ Même chose sans `docker login` : `git pull && docker compose up -d --build`.
 
 Le HTTPS est obligatoire pour le service worker et les notifications.
 
+## Rappels
+
+- Chaque jour à l'heure choisie, si une plante a besoin d'eau :
+  - **jusqu'à 3 plantes**, une notification par plante, avec sa photo et le type d'arrosage ;
+  - **au-delà**, une seule notification groupée.
+- Les notifications portent deux boutons : **« Arrosée »** (ou « Tout est arrosé ») et **« Dans 3 h »**. Ils marchent depuis l'écran verrouillé, sans ouvrir l'appli, grâce à un jeton signé valable 3 jours et limité aux plantes concernées. Un double appui ne crée pas de doublon. Les boutons s'affichent sur Android, Windows et macOS. Sur iPhone, iOS ne les affiche pas : toucher la notification ouvre la plante.
+- Les plantes signalées par un capteur font l'objet d'une notification « À surveiller » à part.
+
 ## Repères d'entretien et saisons
 
 - **Repères par espèce** (`care.js`) : la base couvre une cinquantaine de plantes d'intérieur et d'aromatiques. Elle donne le rythme d'arrosage en été et en hiver, la lumière, la température et l'humidité, avec quelques conseils. La correspondance se fait sur l'espèce, puis sur le genre, puis sur le nom commun. Les repères sont proposés dans le formulaire (appliqués d'office pour une nouvelle plante) et affichés sur la fiche. Ils servent aussi de seuils par défaut pour les alertes des capteurs.

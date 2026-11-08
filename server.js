@@ -346,37 +346,88 @@ async function pushToAll(payload) {
   return { sent, total: subs.length };
 }
 
-async function buildReminder() {
-  const plants = await allPlants();
-  const due = plants.filter((p) => p.days_left <= 0);
-  const attention = plants.filter((p) => p.days_left > 0 && p.alerts.some((a) => a.level === 'attention'));
-  if (!due.length && !attention.length) return null;
-  const list = (arr) => (arr.length <= 3 ? arr.join(', ') : `${arr.slice(0, 3).join(', ')} et ${arr.length - 3} autre${arr.length - 3 > 1 ? 's' : ''}`);
-  const parts = [];
-  if (due.length) parts.push(`À arroser : ${list(due.map((p) => p.name))}`);
-  if (attention.length) parts.push(`À surveiller : ${list(attention.map((p) => `${p.name} (${p.alerts.find((a) => a.level === 'attention').text.toLowerCase()})`))}`);
-  const n = due.length + attention.length;
-  return {
-    title: n === 1 ? '1 plante a besoin de vous' : `${n} plantes ont besoin de vous`,
-    body: parts.join('\n'),
-    url: '/',
-    tag: 'rosee-daily',
-  };
+// ---------- Rappels avec actions ----------
+// Jeton signé glissé dans la notification : il permet de marquer « arrosée » depuis la notification,
+// sans session, uniquement pour ces plantes et pendant 3 jours.
+const ACTION_KEY = crypto.createHash('sha256').update(`rosee-push:${vapid.privateKey}`).digest();
+function actionToken(ids) {
+  const payload = Buffer.from(JSON.stringify({ ids, exp: Date.now() + 3 * 86400e3 })).toString('base64url');
+  return `${payload}.${crypto.createHmac('sha256', ACTION_KEY).update(payload).digest('base64url')}`;
 }
+function readActionToken(tok) {
+  const [payload, sig] = String(tok || '').split('.');
+  if (!payload || !sig) return null;
+  const want = crypto.createHmac('sha256', ACTION_KEY).update(payload).digest();
+  const got = Buffer.from(sig, 'base64url');
+  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return null;
+  const d = parseJSON(Buffer.from(payload, 'base64url').toString('utf8'), null);
+  return d && Array.isArray(d.ids) && d.exp > Date.now() ? d : null;
+}
+const listNames = (arr) => (arr.length <= 3 ? arr.join(', ') : `${arr.slice(0, 3).join(', ')} et ${arr.length - 3} autre${arr.length - 3 > 1 ? 's' : ''}`);
+const shortWater = (p) => (p.care?.water ? ` · ${p.care.water.short.toLowerCase()}` : '');
+
+// Jusqu'à 3 plantes à arroser : une notification chacune ; au-delà, une seule notification groupée.
+async function buildReminders(onlyIds = null) {
+  const plants = await allPlants();
+  let due = plants.filter((p) => p.days_left <= 0);
+  if (onlyIds) due = due.filter((p) => onlyIds.includes(p.id));
+  const attention = onlyIds ? [] : plants.filter((p) => p.days_left > 0 && p.alerts.some((a) => a.level === 'attention'));
+  const out = [];
+  const actions = (n) => [{ action: 'water', title: n > 1 ? 'Tout est arrosé' : 'Arrosée' }, { action: 'later', title: 'Dans 3 h' }];
+  if (due.length && due.length <= 3) {
+    for (const p of due) {
+      out.push({
+        title: `Arroser ${p.name}`,
+        body: `${p.days_left < 0 && p.last_watered_at ? `En retard de ${-p.days_left} j` : "Aujourd'hui"}${p.room ? ` · ${p.room}` : ''}${shortWater(p)}`,
+        url: `/#/plante/${p.id}`, tag: `rosee-plant-${p.id}`, image: p.photo_url || undefined,
+        token: actionToken([p.id]), actions: actions(1), done: `${p.name} arrosée`,
+      });
+    }
+  } else if (due.length) {
+    out.push({
+      title: `${due.length} plantes ont soif`, body: listNames(due.map((p) => p.name)),
+      url: '/', tag: 'rosee-daily', token: actionToken(due.map((p) => p.id)), actions: actions(due.length), done: `${due.length} plantes arrosées`,
+    });
+  }
+  if (attention.length) {
+    out.push({
+      title: attention.length === 1 ? `À surveiller : ${attention[0].name}` : `${attention.length} plantes à surveiller`,
+      body: listNames(attention.map((p) => `${p.name} (${p.alerts.find((a) => a.level === 'attention').text.toLowerCase()})`)),
+      url: attention.length === 1 ? `/#/plante/${attention[0].id}` : '/#/plantes?f=alerts', tag: 'rosee-attention',
+    });
+  }
+  return out;
+}
+async function sendReminders(onlyIds) {
+  const list = await buildReminders(onlyIds);
+  let sent = 0, total = 0;
+  for (const payload of list) { const r = await pushToAll(payload); sent += r.sent; total = r.total; }
+  return { sent, total, notifications: list.length };
+}
+
+// Rappels reportés (« Dans 3 h »), conservés en base pour survivre à un redémarrage
+const getSnoozes = () => parseJSON(getSetting('snoozes', '[]'), []);
+function addSnooze(ids, ms) { setSetting('snoozes', JSON.stringify([...getSnoozes(), { at: Date.now() + ms, ids }].slice(-50))); }
 
 setInterval(async () => {
   try {
+    // Reports arrivés à échéance : on ne renvoie que les plantes toujours pas arrosées
+    const sn = getSnoozes();
+    const ready = sn.filter((x) => x.at <= Date.now());
+    if (ready.length) {
+      setSetting('snoozes', JSON.stringify(sn.filter((x) => x.at > Date.now())));
+      const ids = [...new Set(ready.flatMap((x) => x.ids))];
+      const r = await sendReminders(ids);
+      if (r.notifications) console.log(`[rosee] rappel reporté envoyé (${r.notifications} notification(s))`);
+    }
     if (getSetting('reminder_enabled', '1') !== '1') return;
     const time = getSetting('reminder_time', '09:00');
     const today = localDateKey();
     if (getSetting('last_reminder_date', '') === today) return;
     if (localHM() < time) return;
     setSetting('last_reminder_date', today);
-    const payload = await buildReminder();
-    if (payload) {
-      const r = await pushToAll(payload);
-      console.log(`[rosee] rappel envoyé (${r.sent}/${r.total})`);
-    }
+    const r = await sendReminders();
+    if (r.notifications) console.log(`[rosee] rappel envoyé (${r.notifications} notification(s), ${r.total} appareil(s))`);
   } catch (e) {
     console.error('[rosee] erreur planificateur', e);
   }
@@ -434,7 +485,7 @@ function rateLimit({ windowMs, max }) {
 }
 const RL = process.env.RATE_LIMIT !== '0';
 if (RL) {
-  app.use(['/auth', '/cal'], rateLimit({ windowMs: 60_000, max: 30 }));
+  app.use(['/auth', '/cal', '/push-action'], rateLimit({ windowMs: 60_000, max: 30 }));
   app.use('/api', rateLimit({ windowMs: 60_000, max: 600 }));
 }
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -476,6 +527,29 @@ app.get('/cal/:token.ics', wrap(async (req, res) => {
   lines.push('END:VCALENDAR');
   res.set('Content-Type', 'text/calendar; charset=utf-8').set('Cache-Control', 'no-cache')
     .send(lines.map((l) => (l.length > 74 ? l.match(/.{1,74}/gu).join('\r\n ') : l)).join('\r\n') + '\r\n');
+}));
+
+// ---------- Actions depuis une notification ----------
+app.post('/push-action', express.json({ limit: '4kb' }), wrap(async (req, res) => {
+  const t = readActionToken(req.body?.token);
+  if (!t) return res.status(403).json({ error: 'Lien expiré : ouvrez Rosée pour arroser' });
+  const ids = t.ids.filter((id) => getPlantRow(id));
+  if (req.body?.action === 'later') {
+    addSnooze(ids, 3 * 3600e3);
+    return res.json({ ok: true, snoozed: ids.length });
+  }
+  if (req.body?.action !== 'water') return res.status(400).json({ error: 'Action inconnue' });
+  const today = localDateKey();
+  let watered = 0;
+  for (const id of ids) {
+    // Pas de doublon si la plante a déjà été arrosée aujourd'hui (double appui, deux appareils)
+    const last = db.prepare('SELECT at FROM waterings WHERE plant_id=? ORDER BY at DESC LIMIT 1').get(id)?.at;
+    if (last && localDateKey(new Date(last)) === today) continue;
+    db.prepare("INSERT INTO waterings(plant_id, at, note) VALUES(?,?,'notification')").run(id, new Date().toISOString());
+    watered++;
+  }
+  google.scheduleSync(2000);
+  res.json({ ok: true, watered });
 }));
 
 if (AUTH_USER && AUTH_PASS) {
@@ -1041,8 +1115,9 @@ app.post('/api/push/unsubscribe', (req, res) => {
   res.json({ ok: true });
 });
 app.post('/api/push/test', wrap(async (_req, res) => {
-  const payload = (await buildReminder()) || { title: 'Rosée est bien connectée', body: 'Aucune plante n’a besoin de vous pour le moment.', url: '/', tag: 'rosee-test' };
-  res.json(await pushToAll(payload));
+  const r = await sendReminders();
+  if (r.notifications) return res.json(r);
+  res.json(await pushToAll({ title: 'Rosée est bien connectée', body: 'Aucune plante n\u2019a besoin de vous pour le moment.', url: '/', tag: 'rosee-test' }));
 }));
 
 

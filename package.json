@@ -1,6 +1,6 @@
 {
   "name": "rosee",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Rosée — gestion des plantes et rappels d'arrosage (PWA auto-hébergée)",
   "main": "server.js",
   "type": "module",

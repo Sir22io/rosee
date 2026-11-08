@@ -1611,6 +1611,10 @@ window.addEventListener('hashchange', async () => {
   await render();
   window.scrollTo(0, 0);
 });
+// Une action faite depuis une notification rafraîchit l'appli ouverte
+navigator.serviceWorker?.addEventListener('message', async (e) => {
+  if (e.data?.type === 'rosee-refresh' && !sheet.open) { await loadPlants(); render(); }
+});
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && !sheet.open) { await loadPlants(); render(); }
 });
