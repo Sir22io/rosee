@@ -56,6 +56,12 @@ Même chose sans `docker login` : `git pull && docker compose up -d --build`.
 
 Le HTTPS est obligatoire pour le service worker et les notifications.
 
+## Repères d'entretien et saisons
+
+- **Repères par espèce** (`care.js`) : la base couvre une cinquantaine de plantes d'intérieur et d'aromatiques. Elle donne le rythme d'arrosage en été et en hiver, la lumière, la température et l'humidité, avec quelques conseils. La correspondance se fait sur l'espèce, puis sur le genre, puis sur le nom commun. Les repères sont proposés dans le formulaire (appliqués d'office pour une nouvelle plante) et affichés sur la fiche. Ils servent aussi de seuils par défaut pour les alertes des capteurs.
+- **Arrosage saisonnier** : chaque plante a un rythme d'été et un rythme d'hiver. Si le rythme d'hiver n'est pas renseigné, il vaut 1,6 fois celui d'été. Entre les deux, Rosée interpole mois par mois : plein été de juin à août, plein hiver de décembre à janvier. Le calendrier, l'agenda et les rappels suivent ce rythme. L'option se désactive plante par plante. Pour l'hémisphère sud, mets `SEASONS=south`.
+- Le nom scientifique trouvé avec la photo automatique est enregistré comme espèce s'il n'était pas renseigné.
+
 ## Photos des plantes
 
 Chaque plante peut avoir :
@@ -119,6 +125,7 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 | `VAPID_SUBJECT` | — | Contact `mailto:` transmis aux services push |
 | `HA_URL` / `HA_TOKEN` | vides | Connexion à Home Assistant |
 | `FEED_BASE_URL` | vide | Adresse publique utilisée dans le lien d'agenda |
+| `SEASONS` | `north` | `south` pour inverser les saisons |
 | `PHOTO_LOOKUP` | `1` | `0` désactive l'attribution automatique d'une photo de référence |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | générées | Pour imposer tes propres clés |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | vides | Authentification HTTP. Le flux `/cal/` en est exempté : il est protégé par son jeton |

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { findCare } from './care.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -24,6 +25,8 @@ const FEED_BASE_URL = (process.env.FEED_BASE_URL || '').replace(/\/+$/, '');
 // Photos de référence (iNaturalist). PHOTO_LOOKUP=0 pour désactiver la recherche automatique.
 const INAT_API = (process.env.INAT_API_URL || 'https://api.inaturalist.org/v1').replace(/\/+$/, '');
 const PHOTO_LOOKUP = process.env.PHOTO_LOOKUP !== '0';
+// Saisons : hémisphère nord par défaut (SEASONS=south pour l'hémisphère sud)
+const SOUTH = (process.env.SEASONS || '').toLowerCase() === 'south';
 const PHOTO_HOSTS = new Set(['inaturalist-open-data.s3.amazonaws.com', 'static.inaturalist.org', ...(process.env.INAT_PHOTO_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)]);
 
 fs.mkdirSync(PHOTO_DIR, { recursive: true });
@@ -68,6 +71,9 @@ if (!cols.includes('targets')) db.exec(`ALTER TABLE plants ADD COLUMN targets TE
 if (!cols.includes('photo_source')) db.exec(`ALTER TABLE plants ADD COLUMN photo_source TEXT DEFAULT NULL`);
 if (!cols.includes('photo_credit')) db.exec(`ALTER TABLE plants ADD COLUMN photo_credit TEXT DEFAULT NULL`);
 // photo_lookup : 0 = recherche auto à faire, 1 = faite ou refusée par l'utilisateur
+// Arrosage saisonnier : interval_days = pleine saison (été), interval_winter = repos hivernal
+if (!cols.includes('interval_winter')) db.exec(`ALTER TABLE plants ADD COLUMN interval_winter INTEGER DEFAULT NULL`);
+if (!cols.includes('seasonal')) db.exec(`ALTER TABLE plants ADD COLUMN seasonal INTEGER NOT NULL DEFAULT 1`);
 if (!cols.includes('photo_lookup')) db.exec(`ALTER TABLE plants ADD COLUMN photo_lookup INTEGER NOT NULL DEFAULT 0`);
 
 const getSetting = (k, d) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value ?? d;
@@ -140,13 +146,13 @@ const METRICS = {
   humidity: { label: "Humidité de l'air", unit: '%' },
 };
 const LUX_MIN = { ombre: 200, 'mi-ombre': 800, lumineux: 1500, soleil: 4000 };
-function targetsFor(p, stored) {
+function targetsFor(p, stored, care) {
   return {
-    moisture_min: stored.moisture_min ?? 20,
-    moisture_max: stored.moisture_max ?? 60,
-    temp_min: stored.temp_min ?? 15,
-    temp_max: stored.temp_max ?? 28,
-    humidity_min: stored.humidity_min ?? 40,
+    moisture_min: stored.moisture_min ?? care?.moisture[0] ?? 20,
+    moisture_max: stored.moisture_max ?? care?.moisture[1] ?? 60,
+    temp_min: stored.temp_min ?? care?.temp[0] ?? 15,
+    temp_max: stored.temp_max ?? care?.temp[1] ?? 28,
+    humidity_min: stored.humidity_min ?? care?.humidity ?? 40,
     lux_min: LUX_MIN[p.light] ?? 1000,
   };
 }
@@ -212,17 +218,42 @@ function dayDiff(fromISO, to = new Date()) {
 }
 const parseJSON = (s, d) => { try { return JSON.parse(s || ''); } catch { return d; } };
 
+// ---------- Saisons ----------
+// Part « hiver » de chaque mois (0 = pleine saison, 1 = repos hivernal), hémisphère nord
+const WINTER_SHARE = [1, 0.9, 0.6, 0.35, 0.1, 0, 0, 0, 0.2, 0.5, 0.8, 1];
+const localMonth = (d) => Number(new Intl.DateTimeFormat('en-US', { timeZone: TZ, month: 'numeric' }).format(d)) - 1;
+const winterOf = (p) => Math.max(p.interval_days, p.interval_winter || Math.round(p.interval_days * 1.6));
+function intervalForMonth(p, m) {
+  if (!p.seasonal) return p.interval_days;
+  const share = WINTER_SHARE[SOUTH ? (m + 6) % 12 : m];
+  return Math.max(1, Math.round(p.interval_days + share * (winterOf(p) - p.interval_days)));
+}
+const intervalAt = (p, date) => intervalForMonth(p, localMonth(date));
+// Prochaines échéances à partir d'aujourd'hui, en suivant le rythme de chaque mois
+function upcomingDates(p, daysLeft, horizonDays) {
+  const out = [];
+  const start = new Date();
+  let offset = Math.max(0, daysLeft);
+  while (offset <= horizonDays) {
+    const d = new Date(start.getTime() + offset * DAY);
+    out.push({ offset, interval: intervalAt(p, d) });
+    offset += intervalAt(p, d);
+  }
+  return out;
+}
+
 function serializePlant(p, states) {
   const last = db.prepare('SELECT at FROM waterings WHERE plant_id=? ORDER BY at DESC LIMIT 1').get(p.id)?.at || null;
   const count = db.prepare('SELECT COUNT(*) c FROM waterings WHERE plant_id=?').get(p.id).c;
   let daysSince = null, daysLeft = 0;
   if (last) {
     daysSince = dayDiff(last);
-    daysLeft = p.interval_days - daysSince;
+    daysLeft = intervalAt(p, new Date(last)) - daysSince;
   }
+  const care = findCare(p.species, p.name);
   const mapping = parseJSON(p.sensors, {});
   const storedTargets = parseJSON(p.targets, {});
-  const targets = targetsFor(p, storedTargets);
+  const targets = targetsFor(p, storedTargets, care);
   const sensors = {};
   for (const m of Object.keys(METRICS)) if (mapping[m]) sensors[m] = readSensor(m, mapping[m], states, targets);
   const readings = Object.values(sensors);
@@ -253,6 +284,12 @@ function serializePlant(p, states) {
     room: p.room,
     light: p.light,
     interval_days: p.interval_days,
+    interval_winter: p.interval_winter,
+    seasonal: !!p.seasonal,
+    winter_interval: winterOf(p),
+    current_interval: intervalAt(p, new Date()),
+    month_intervals: Array.from({ length: 12 }, (_, m) => intervalForMonth(p, m)),
+    care,
     notes: p.notes,
     created_at: p.created_at,
     photo_url: p.photo ? `/photos/${p.photo}` : null,
@@ -368,15 +405,13 @@ app.get('/cal/:token.ics', wrap(async (req, res) => {
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Rosee//Arrosages//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
     'X-WR-CALNAME:Rosée — arrosages', `X-WR-TIMEZONE:${TZ}`, 'REFRESH-INTERVAL;VALUE=DURATION:PT6H', 'X-PUBLISHED-TTL:PT6H'];
   for (const p of plants) {
-    let offset = Math.max(0, p.days_left);
-    while (offset <= horizon) {
+    for (const { offset, interval } of upcomingDates(p, p.days_left, horizon)) {
       const key = addDaysKey(today, offset);
       lines.push('BEGIN:VEVENT', `UID:rosee-${p.id}-${key}@rosee`, `DTSTAMP:${stamp}`,
         `DTSTART;VALUE=DATE:${icsDate(key)}`, `DTEND;VALUE=DATE:${icsDate(addDaysKey(key, 1))}`,
         `SUMMARY:${icsEscape(`💧 Arroser ${p.name}`)}`,
         ...(p.room ? [`LOCATION:${icsEscape(p.room)}`] : []),
-        `DESCRIPTION:${icsEscape(`Tous les ${p.interval_days} jours.`)}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
-      offset += p.interval_days;
+        `DESCRIPTION:${icsEscape(`Rythme actuel : tous les ${interval} jours.`)}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
     }
   }
   lines.push('END:VCALENDAR');
@@ -520,6 +555,8 @@ async function runPhotoLookups() {
         if (saved) {
           const r = db.prepare("UPDATE plants SET photo=@photo, photo_source='auto', photo_credit=@credit, photo_lookup=1 WHERE id=@id AND photo IS NULL AND photo_lookup=0").run({ id: p.id, photo: saved, credit });
           if (!r.changes) removePhoto(saved);
+          // Espèce trouvée : on la renseigne si l'utilisateur ne l'a pas fait (sert aux conseils d'entretien)
+          else if (pick.rank === 'species' || pick.rank === 'variety' || pick.rank === 'hybrid') db.prepare("UPDATE plants SET species=? WHERE id=? AND (species IS NULL OR species='')").run(pick.name, p.id);
         } else {
           db.prepare('UPDATE plants SET photo_lookup=1 WHERE id=? AND photo_lookup=0').run(p.id);
         }
@@ -542,6 +579,8 @@ const ENTITY_RE = /^sensor\.[a-z0-9_]+$/;
 function plantFields(body) {
   const name = String(body.name || '').trim().slice(0, 80);
   const interval = Math.max(1, Math.min(120, parseInt(body.interval_days, 10) || 7));
+  const wRaw = parseInt(body.interval_winter, 10);
+  const intervalWinter = Number.isFinite(wRaw) ? Math.max(interval, Math.min(180, wRaw)) : null;
   const sensors = {};
   for (const m of Object.keys(METRICS)) {
     const v = String(body[`sensor_${m}`] || '').trim();
@@ -561,6 +600,8 @@ function plantFields(body) {
     room: String(body.room || '').trim().slice(0, 60),
     light: String(body.light || '').trim().slice(0, 30),
     interval_days: interval,
+    interval_winter: intervalWinter,
+    seasonal: body.seasonal === '0' ? 0 : 1,
     notes: String(body.notes || '').slice(0, 4000),
     sensors: JSON.stringify(sensors),
     targets: JSON.stringify(targets),
@@ -588,7 +629,7 @@ app.post('/api/plants', upload.single('photo'), wrap(async (req, res) => {
     photo_source = 'ref'; photo_credit = refCredit(req.body); photo_lookup = 1;
   }
   const info = db
-    .prepare('INSERT INTO plants(name,species,room,light,interval_days,notes,photo,sensors,targets,photo_source,photo_credit,photo_lookup) VALUES(@name,@species,@room,@light,@interval_days,@notes,@photo,@sensors,@targets,@photo_source,@photo_credit,@photo_lookup)')
+    .prepare('INSERT INTO plants(name,species,room,light,interval_days,interval_winter,seasonal,notes,photo,sensors,targets,photo_source,photo_credit,photo_lookup) VALUES(@name,@species,@room,@light,@interval_days,@interval_winter,@seasonal,@notes,@photo,@sensors,@targets,@photo_source,@photo_credit,@photo_lookup)')
     .run({ ...f, photo, photo_source, photo_credit, photo_lookup });
   if (!photo) runPhotoLookups();
   if (req.body.watered_today === '1') db.prepare('INSERT INTO waterings(plant_id, at) VALUES(?,?)').run(info.lastInsertRowid, new Date().toISOString());
@@ -614,7 +655,7 @@ app.put('/api/plants/:id', upload.single('photo'), wrap(async (req, res) => {
     photo = null; photo_source = null; photo_credit = null; photo_lookup = 0;
   }
   if (photo !== existing.photo) removePhoto(existing.photo);
-  db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets,photo_source=@photo_source,photo_credit=@photo_credit,photo_lookup=@photo_lookup WHERE id=@id')
+  db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,interval_winter=@interval_winter,seasonal=@seasonal,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets,photo_source=@photo_source,photo_credit=@photo_credit,photo_lookup=@photo_lookup WHERE id=@id')
     .run({ ...f, photo, photo_source, photo_credit, photo_lookup, id: existing.id });
   if (!photo && photo_lookup === 0) runPhotoLookups();
   res.json(serializePlant(getPlantRow(existing.id), await loadStates([])));
@@ -729,6 +770,12 @@ app.get('/api/plants/:id/history', wrap(async (req, res) => {
   const series = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([t, b]) => ({ t: t + bucketMs / 2, v: Math.round((b.s / b.n) * 10) / 10 }));
   res.json({ metric, entity, unit: METRICS[metric]?.unit || '', points: series });
 }));
+
+// ---------- Repères d'entretien ----------
+app.get('/api/care', (req, res) => {
+  const care = findCare(String(req.query.species || ''), String(req.query.name || ''));
+  res.json({ care, current_month: localMonth(new Date()), winter_share: WINTER_SHARE, south: SOUTH });
+});
 
 // ---------- Photos de référence ----------
 app.get('/api/photo-search', wrap(async (req, res) => {

@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -r
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.js ./
+COPY server.js care.js ./
 COPY public ./public
 RUN mkdir -p /data && chown -R node:node /data
 USER node

@@ -43,6 +43,10 @@ const fmtLong = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeri
 const fmtShort = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
 const fmtDM = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' });
 const fmtMonth = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' });
+const MONTHS_LONG = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+const MONTHS_SHORT = ['Janv.', 'Févr.', 'Mars', 'Avr.', 'Mai', 'Juin', 'Juil.', 'Août', 'Sept.', 'Oct.', 'Nov.', 'Déc.'];
+// Part « hiver » de chaque mois, identique au serveur (hémisphère nord)
+const SEASON_SHARE = [1, 0.9, 0.6, 0.35, 0.1, 0, 0, 0, 0.2, 0.5, 0.8, 1];
 const fmtTime = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' });
 const fmtDow = new Intl.DateTimeFormat('fr-FR', { weekday: 'short' });
 const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -376,7 +380,7 @@ async function renderDetail(id) {
   view.classList.add('flush-top');
   const metrics = Object.keys(METRIC).filter((m) => p.sensors[m]);
   if (!metrics.includes(chartMetric)) chartMetric = metrics[0] || null;
-  const frac = !p.last_watered_at ? 0 : Math.max(0, Math.min(1, p.days_left / p.interval_days));
+  const frac = !p.last_watered_at ? 0 : Math.max(0, Math.min(1, p.days_left / (p.current_interval || p.interval_days)));
   const ringColor = p.days_left <= 0 ? 'var(--orange)' : 'var(--teal)';
   const C = 2 * Math.PI * 31;
 
@@ -500,19 +504,39 @@ function drawTab(p, metrics) {
       <div class="summary">
         <div><span>Prochain arrosage</span><b>${esc(nextText(p))}</b></div>
         <div><span>Dernier arrosage</span><b>${last ? esc(cap(relPast(last))) : 'Jamais'}</b></div>
-        <div><span>Fréquence</span><b>${p.interval_days === 1 ? 'Chaque jour' : `Tous les ${p.interval_days} jours`}</b></div>
+        <div><span>Rythme actuel</span><b>${p.current_interval === 1 ? 'Chaque jour' : `Tous les ${p.current_interval} jours`}</b></div>
+        <div><span>Été / hiver</span><b>${p.seasonal ? `${p.interval_days} j / ${p.winter_interval} j` : `${p.interval_days} j toute l'année`}</b></div>
         <div><span>Lumière</span><b>${esc(lightLabel(p.light))}</b></div>
         ${metrics.includes('moisture') ? `<div><span>Humidité du sol cible</span><b>${t.moisture_min}–${t.moisture_max} %</b></div>` : ''}
         ${metrics.includes('temperature') ? `<div><span>Température idéale</span><b>${t.temp_min}–${t.temp_max} °C</b></div>` : ''}
       </div>
     </section>
 
+    ${careCard(p)}
     ${p.notes ? `<section class="card"><div class="section-title"><h2>Notes</h2></div><p class="notes">${esc(p.notes)}</p></section>` : ''}
   `;
   $('#connect')?.addEventListener('click', () => openPlantForm(p, { focusSensors: true }));
   $$('[data-h]', body).forEach((b) => (b.onclick = () => { chartHours = Number(b.dataset.h); $$('[data-h]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); loadChart(p); }));
   $$('[data-m]', body).forEach((b) => (b.onclick = () => { chartMetric = b.dataset.m; $$('[data-m]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); loadChart(p); }));
   if (metrics.length) loadChart(p);
+}
+
+function careCard(p) {
+  const c = p.care;
+  if (!c) return '';
+  const diff = c.summer !== p.interval_days || (p.seasonal && c.winter !== p.winter_interval) || !p.seasonal;
+  return `<section class="card">
+    <div class="section-title"><h2>Entretien <span class="soft">(${esc(c.label)})</span></h2></div>
+    <div class="reco-facts" style="margin-bottom:12px">
+      <span>${icon('drop')}Été : ${c.summer} j · hiver : ${c.winter} j</span>
+      <span>${icon('sun')}${esc(lightLabel(c.light))}</span>
+      <span>${icon('thermo')}${c.temp[0]}–${c.temp[1]} °C</span>
+      <span>${icon('air')}Air ≥ ${c.humidity} %</span>
+    </div>
+    <ul class="care-tips">${c.tips.map((t) => `<li>${icon('check')}<span>${esc(t)}</span></li>`).join('')}</ul>
+    ${diff ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Vos réglages diffèrent de ces repères : c'est normal si votre intérieur est plus chaud, plus sec ou plus lumineux. Ils restent modifiables dans la fiche.</p>` : ''}
+    <p class="muted" style="font-size:11.5px;margin:8px 0 0">Repères généraux pour une culture en intérieur : vérifiez toujours la terre au doigt avant d'arroser.</p>
+  </section>`;
 }
 
 function adviceText(a) {
@@ -678,7 +702,7 @@ async function renderCalendar() {
   for (const w of done) { const d = new Date(w.at); push(dayKey(d), { type: 'done', plant_id: w.plant_id, name: w.plant_name, room: w.room, at: d, id: w.id }); }
   for (const p of state.plants) {
     let first = true;
-    for (let d = addDays(today, Math.max(0, p.days_left)); d <= gridEnd; d = addDays(d, p.interval_days)) {
+    for (let d = addDays(today, Math.max(0, p.days_left)); d <= gridEnd; d = addDays(d, p.month_intervals?.[d.getMonth()] || p.interval_days)) {
       push(dayKey(d), { type: first && p.days_left < 0 ? 'late' : 'planned', plant_id: p.id, name: p.name, room: p.room, plant: p });
       first = false;
     }
@@ -991,14 +1015,30 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
 
         <div class="form-section">
           <h3>${icon('drop')}Arrosage</h3>
-          <div class="field"><span id="interval-label">Arroser tous les</span>
+          <div class="care-reco" id="care-reco" hidden></div>
+          <div class="field"><span id="interval-label">En pleine saison (printemps–été), tous les</span>
             <div class="stepper" role="group" aria-labelledby="interval-label">
-              <button type="button" data-step="-1" aria-label="Un jour de moins">−</button>
+              <button type="button" data-step="-1" data-target="summer" aria-label="Un jour de moins">−</button>
               <output id="interval-out" aria-live="polite"><b>${interval}</b><span>${interval > 1 ? 'jours' : 'jour'}</span></output>
-              <button type="button" data-step="1" aria-label="Un jour de plus">+</button>
+              <button type="button" data-step="1" data-target="summer" aria-label="Un jour de plus">+</button>
             </div>
             <input type="hidden" name="interval_days" value="${interval}">
             <div class="presets">${presets.map((n) => `<button type="button" data-preset="${n}" aria-pressed="${n === interval}">${n} j</button>`).join('')}</div>
+          </div>
+          <div class="field season-row">
+            <div><b style="font-size:14px">Adapter à la saison</b><div class="muted" style="font-size:12.5px">Arrosages plus espacés en automne et en hiver</div></div>
+            <label class="switch"><input type="checkbox" id="seasonal-toggle" ${p?.seasonal === false ? '' : 'checked'} aria-label="Adapter à la saison"><span></span></label>
+          </div>
+          <input type="hidden" name="seasonal" value="${p?.seasonal === false ? '0' : '1'}">
+          <div class="field" id="winter-field" ${p?.seasonal === false ? 'hidden' : ''}><span id="winter-label">En hiver, tous les</span>
+            <div class="stepper" role="group" aria-labelledby="winter-label">
+              <button type="button" data-step="-1" data-target="winter" aria-label="Un jour de moins en hiver">−</button>
+              <output id="winter-out" aria-live="polite"></output>
+              <button type="button" data-step="1" data-target="winter" aria-label="Un jour de plus en hiver">+</button>
+            </div>
+            <input type="hidden" name="interval_winter" value="${p?.interval_winter ?? ''}">
+            <div class="season-bar" id="season-bar" aria-hidden="true"></div>
+            <small id="season-now"></small>
           </div>
           ${editing ? '' : `<div class="field" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
             <div><b style="font-size:14px">Arrosée aujourd'hui</b><div class="muted" style="font-size:12.5px">Le compte à rebours démarre maintenant</div></div>
@@ -1031,14 +1071,78 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
     </form>`, (root) => {
     const form = $('#plant-form', root);
     const hidden = form.elements.interval_days;
+    const winterInput = form.elements.interval_winter;
+    let touched = editing; // en modification, on n'écrase jamais les réglages sans demander
+    const winterVal = () => Math.max(Number(hidden.value), Number(winterInput.value) || Math.round(Number(hidden.value) * 1.6));
+    const drawSeason = () => {
+      const sm = Number(hidden.value), w = winterVal();
+      $('#winter-out', root).innerHTML = `<b>${w}</b><span>${w > 1 ? 'jours' : 'jour'}${winterInput.value ? '' : ' · automatique'}</span>`;
+      const on = form.elements.seasonal.value === '1';
+      const ivs = SEASON_SHARE.map((sh) => (on ? Math.max(1, Math.round(sm + sh * (w - sm))) : sm));
+      const max = Math.max(...ivs);
+      const m = new Date().getMonth();
+      $('#season-bar', root).innerHTML = ivs.map((v, i) => `<span class="${i === m ? 'now' : ''}" style="--h:${(v / max) * 100}%" title="${MONTHS_SHORT[i]} : ${v} j"><i></i><em>${MONTHS_SHORT[i][0]}</em></span>`).join('');
+      $('#season-now', root).textContent = on ? `En ${MONTHS_LONG[m]}, Rosée prévoit un arrosage tous les ${ivs[m]} jours.` : '';
+    };
     const setIv = (n) => {
       n = Math.max(1, Math.min(120, n));
       hidden.value = n;
       $('#interval-out', root).innerHTML = `<b>${n}</b><span>${n > 1 ? 'jours' : 'jour'}</span>`;
       $$('[data-preset]', root).forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.preset) === n)));
+      if (winterInput.value && Number(winterInput.value) < n) winterInput.value = n;
+      drawSeason();
     };
-    $$('[data-step]', root).forEach((b) => (b.onclick = () => setIv(Number(hidden.value) + Number(b.dataset.step))));
-    $$('[data-preset]', root).forEach((b) => (b.onclick = () => setIv(Number(b.dataset.preset))));
+    const setWinter = (n) => { winterInput.value = Math.max(Number(hidden.value), Math.min(180, n)); drawSeason(); };
+    $$('[data-step]', root).forEach((b) => (b.onclick = () => {
+      touched = true;
+      if (b.dataset.target === 'winter') setWinter(winterVal() + Number(b.dataset.step));
+      else setIv(Number(hidden.value) + Number(b.dataset.step));
+    }));
+    $$('[data-preset]', root).forEach((b) => (b.onclick = () => { touched = true; setIv(Number(b.dataset.preset)); }));
+    $('#seasonal-toggle', root).onchange = (e) => {
+      form.elements.seasonal.value = e.target.checked ? '1' : '0';
+      $('#winter-field', root).hidden = !e.target.checked;
+      drawSeason();
+    };
+    $$('[name=light]', root).forEach((r) => r.addEventListener('change', () => { touched = true; }));
+    drawSeason();
+
+    // Repères d'entretien selon l'espèce
+    let careQuery = null;
+    const recoEl = $('#care-reco', root);
+    const applyCare = (c, quiet) => {
+      setIv(c.summer);
+      setWinter(c.winter);
+      if (!$('#seasonal-toggle', root).checked) { $('#seasonal-toggle', root).checked = true; $('#seasonal-toggle', root).onchange({ target: $('#seasonal-toggle', root) }); }
+      const radio = form.querySelector(`[name=light][value="${c.light}"]`);
+      if (radio) radio.checked = true;
+      for (const [k, v] of [['moisture_min', c.moisture[0]], ['moisture_max', c.moisture[1]], ['temp_min', c.temp[0]], ['temp_max', c.temp[1]]]) if (form.elements[k]) form.elements[k].placeholder = v;
+      progress();
+      recoEl.querySelector('.reco-apply')?.replaceWith(Object.assign(document.createElement('span'), { className: 'reco-done', textContent: 'Réglages appliqués' }));
+      if (!quiet) toast('Réglages recommandés appliqués');
+    };
+    const loadCare = async () => {
+      const q = `${form.elements.species.value.trim()}|${form.elements.name.value.trim()}`;
+      if (q === careQuery) return;
+      careQuery = q;
+      if (q === '|') { recoEl.hidden = true; return; }
+      try {
+        const { care: c } = await api(`/api/care?species=${encodeURIComponent(form.elements.species.value)}&name=${encodeURIComponent(form.elements.name.value)}`);
+        if (!c) { recoEl.hidden = true; return; }
+        const same = Number(hidden.value) === c.summer && winterVal() === c.winter && form.querySelector('[name=light]:checked')?.value === c.light;
+        recoEl.hidden = false;
+        recoEl.innerHTML = `<div class="reco-head">${icon('plants')}<b>Repères pour ${esc(c.label)}</b>${c.match === 'genus' ? '<span class="muted">(genre)</span>' : ''}</div>
+          <div class="reco-facts">
+            <span>${icon('drop')}Été : ${c.summer} j · hiver : ${c.winter} j</span>
+            <span>${icon('sun')}${esc(lightLabel(c.light))}</span>
+            <span>${icon('thermo')}${c.temp[0]}–${c.temp[1]} °C</span>
+          </div>
+          ${same ? '<span class="reco-done">Réglages appliqués</span>' : '<button type="button" class="btn sm reco-apply">Appliquer ces réglages</button>'}`;
+        recoEl.querySelector('.reco-apply')?.addEventListener('click', () => { touched = true; applyCare(c); });
+        if (!touched) applyCare(c, true);
+      } catch { recoEl.hidden = true; }
+    };
+    for (const n of ['name', 'species']) form.elements[n].addEventListener('change', loadCare);
 
     // Barre de progression : complétude de la fiche
     const progress = () => {
@@ -1115,7 +1219,7 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
           showPreview(ph.preview);
           creditEl.textContent = creditText(ph);
           unselectRefs(); b.setAttribute('aria-selected', 'true');
-          if (!form.elements.species.value.trim() && ph.taxon) { form.elements.species.value = ph.taxon; lastQuery = ph.taxon; progress(); }
+          if (!form.elements.species.value.trim() && ph.taxon) { form.elements.species.value = ph.taxon; lastQuery = ph.taxon; progress(); loadCare(); }
         }));
       } catch (err) {
         strip.innerHTML = `<span class="refs-msg">${esc(err.message)}</span>`;
@@ -1125,7 +1229,7 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
     $('#ref-search', root).onclick = () => { lastQuery = null; loadRefs(); };
     let refTimer;
     for (const n of ['name', 'species']) form.elements[n].addEventListener('change', () => { clearTimeout(refTimer); refTimer = setTimeout(() => loadRefs(), 300); });
-    if (form.elements.name.value.trim() || form.elements.species.value.trim()) loadRefs();
+    if (form.elements.name.value.trim() || form.elements.species.value.trim()) { loadRefs(); loadCare(); }
 
     form.onsubmit = async (e) => {
       e.preventDefault();
