@@ -1171,6 +1171,54 @@ function drawGcal() {
   });
 }
 
+// ---------- Arrosage rapide (ouvert depuis une notification, marche aussi sans session) ----------
+async function renderQuickWater() {
+  document.body.classList.add('logged-out');
+  const token = new URLSearchParams(location.hash.split('?')[1] || '').get('t');
+  const call = (body) => fetch('/push-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, ...body }) }).then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }));
+  view.innerHTML = `<div class="quick"><div class="skeleton">Chargement…</div></div>`;
+  const r = await call({ action: 'info' });
+  const box = $('.quick');
+  if (!r.ok) {
+    box.innerHTML = `<div class="quick-card"><h1>Lien expiré</h1><p class="muted">Ce rappel date de plus de 3 jours.</p><a class="btn block" href="#/">Ouvrir Rosée</a></div>`;
+    return;
+  }
+  const plants = r.data.plants;
+  const todo = () => $$('.qrow:not(.done)', box);
+  box.innerHTML = `<div class="quick-card">
+    <span class="logo-mark big">${icon('drop')}</span>
+    <h1>${plants.length > 1 ? `${plants.length} plantes à arroser` : 'À arroser'}</h1>
+    <ul class="qlist">${plants.map((p) => `<li class="qrow" data-id="${p.id}">
+      ${p.thumb ? `<span class="thumb"><img src="${esc(p.thumb)}" alt=""></span>` : thumb(null)}
+      <span class="qtxt"><b>${esc(p.name)}</b><span>${[p.room, p.water?.short].filter(Boolean).map(esc).join(' · ')}</span></span>
+      <button class="btn sm" type="button">${icon('check')}Arrosée</button></li>`).join('')}</ul>
+    ${plants[0]?.water && plants.length === 1 ? `<p class="water-hint">${icon('drop')}<span>${esc(plants[0].water.text)}</span></p>` : ''}
+    ${plants.length > 1 ? `<button class="btn block" type="button" id="q-all">${icon('check')}Tout est arrosé</button>` : ''}
+    <div class="quick-foot"><button class="btn secondary sm" type="button" id="q-later">${icon('clock')}Me le rappeler dans 3 h</button><a class="link-btn" href="#/">Ouvrir Rosée</a></div>
+  </div>`;
+  const markDone = (li) => { li.classList.add('done'); li.querySelector('button').outerHTML = `<span class="reco-done">Arrosée</span>`; };
+  const finish = () => {
+    if (todo().length) return;
+    $('#q-all', box)?.remove(); $('#q-later', box)?.remove();
+    box.querySelector('h1').textContent = 'Merci, c\u2019est noté';
+  };
+  $$('.qrow button', box).forEach((b) => (b.onclick = async () => {
+    const li = b.closest('.qrow'); b.disabled = true;
+    const res = await call({ action: 'water', ids: [Number(li.dataset.id)] });
+    if (res.ok) { markDone(li); finish(); } else { b.disabled = false; toast(res.data.error || 'Impossible pour le moment'); }
+  }));
+  $('#q-all', box)?.addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
+    const res = await call({ action: 'water', ids: todo().map((li) => Number(li.dataset.id)) });
+    if (res.ok) { todo().forEach(markDone); finish(); } else toast(res.data.error || 'Impossible pour le moment');
+  });
+  $('#q-later', box).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    const res = await call({ action: 'later', ids: todo().map((li) => Number(li.dataset.id)) });
+    toast(res.ok ? 'Rappel dans 3 heures' : 'Impossible pour le moment');
+  };
+}
+
 // ---------- Écran de connexion ----------
 function renderLogin() {
   document.body.classList.add('logged-out');
@@ -1584,6 +1632,7 @@ function currentRoute() {
   if (h.startsWith('#/capteurs')) return 'sensors';
   if (h.startsWith('#/parametres')) return 'settings';
   if (h.startsWith('#/connexion')) return 'login';
+  if (h.startsWith('#/arroser')) return 'quick';
   return 'home';
 }
 async function render() {
@@ -1597,6 +1646,7 @@ async function render() {
   else if (r === 'calendar') await renderCalendar();
   else if (r === 'sensors') await renderSensors();
   else if (r === 'settings') await renderSettings();
+  else if (r === 'quick') { await renderQuickWater(); return; }
   else if (r === 'login') {
     if (state.me?.auth === false || (state.me?.auth && state.me.user)) { location.hash = '#/'; return; }
     renderLogin(); return;
@@ -1607,7 +1657,7 @@ async function render() {
 
 window.addEventListener('hashchange', async () => {
   if (sheet.open) sheet.close();
-  if (!state.me && currentRoute() !== 'login') { location.reload(); return; }
+  if (!state.me && !['login', 'quick'].includes(currentRoute())) { location.reload(); return; }
   await render();
   window.scrollTo(0, 0);
 });
@@ -1627,6 +1677,7 @@ $('#global-q').addEventListener('input', (e) => {
 (async function init() {
   view.innerHTML = `<div class="skeleton">Chargement…</div>`;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').then((r) => (swReg = r)).catch(() => {});
+  if (currentRoute() === 'quick') { await renderQuickWater(); return; }
   try {
     try { state.me = await api('/api/me'); }
     catch (e) {

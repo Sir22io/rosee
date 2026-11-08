@@ -72,3 +72,21 @@ test('une plante en retard reste groupée et l’action « tout arrosé » couvr
   assert.equal(r.data.watered, plants.length);
   assert.equal((await app.api('/api/plants')).data.filter((x) => x.days_left <= 0).length, 0);
 });
+
+test('écran rapide : infos limitées aux plantes du jeton, action sur une partie seulement', async () => {
+  const all = (await app.api('/api/plants')).data;
+  const [a, b, c] = all;
+  const t = token([a.id, b.id]);
+  const info = await action({ token: t, action: 'info' });
+  assert.equal(info.status, 200);
+  assert.deepEqual(info.data.plants.map((p) => p.id).sort(), [a.id, b.id].sort());
+  // Demander une plante hors du jeton ne l'arrose pas
+  const before = (await app.api(`/api/plants/${c.id}`)).data.history.length;
+  const r = await action({ token: t, action: 'water', ids: [c.id] });
+  assert.equal(r.data.watered, 0);
+  assert.equal((await app.api(`/api/plants/${c.id}`)).data.history.length, before);
+});
+
+test('photo de l’écran rapide : seulement avec un jeton couvrant la plante', async () => {
+  assert.equal((await app.req('/push-photo/inexistant.webp?t=x')).status, 404);
+});

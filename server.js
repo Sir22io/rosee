@@ -379,14 +379,17 @@ async function buildReminders(onlyIds = null) {
       out.push({
         title: `Arroser ${p.name}`,
         body: `${p.days_left < 0 && p.last_watered_at ? `En retard de ${-p.days_left} j` : "Aujourd'hui"}${p.room ? ` · ${p.room}` : ''}${shortWater(p)}`,
-        url: `/#/plante/${p.id}`, tag: `rosee-plant-${p.id}`, image: p.photo_url || undefined,
-        token: actionToken([p.id]), actions: actions(1), done: `${p.name} arrosée`,
+        tag: `rosee-plant-${p.id}`, image: p.photo_url || undefined,
+        ...(() => { const t = actionToken([p.id]); return { token: t, url: `/#/arroser?t=${t}` }; })(),
+        actions: actions(1), done: `${p.name} arrosée`,
       });
     }
   } else if (due.length) {
     out.push({
       title: `${due.length} plantes ont soif`, body: listNames(due.map((p) => p.name)),
-      url: '/', tag: 'rosee-daily', token: actionToken(due.map((p) => p.id)), actions: actions(due.length), done: `${due.length} plantes arrosées`,
+      tag: 'rosee-daily',
+      ...(() => { const t = actionToken(due.map((p) => p.id)); return { token: t, url: `/#/arroser?t=${t}` }; })(),
+      actions: actions(due.length), done: `${due.length} plantes arrosées`,
     });
   }
   if (attention.length) {
@@ -533,7 +536,17 @@ app.get('/cal/:token.ics', wrap(async (req, res) => {
 app.post('/push-action', express.json({ limit: '4kb' }), wrap(async (req, res) => {
   const t = readActionToken(req.body?.token);
   if (!t) return res.status(403).json({ error: 'Lien expiré : ouvrez Rosée pour arroser' });
-  const ids = t.ids.filter((id) => getPlantRow(id));
+  let ids = t.ids.filter((id) => getPlantRow(id));
+  if (Array.isArray(req.body?.ids)) ids = ids.filter((id) => req.body.ids.includes(id)); // jamais au-delà du jeton
+  if (req.body?.action === 'info') {
+    const states = await haStates();
+    const list = ids.map((id) => serializePlant(getPlantRow(id), states)).map((p) => ({
+      id: p.id, name: p.name, room: p.room, days_left: p.days_left, last_watered_at: p.last_watered_at,
+      water: p.care?.water ? { short: p.care.water.short, text: p.care.water.text } : null,
+      thumb: p.photo_url ? `/push-photo/${path.basename(p.photo_url)}?t=${encodeURIComponent(req.body.token)}` : null,
+    }));
+    return res.json({ plants: list });
+  }
   if (req.body?.action === 'later') {
     addSnooze(ids, 3 * 3600e3);
     return res.json({ ok: true, snoozed: ids.length });
@@ -551,6 +564,14 @@ app.post('/push-action', express.json({ limit: '4kb' }), wrap(async (req, res) =
   google.scheduleSync(2000);
   res.json({ ok: true, watered });
 }));
+
+app.get('/push-photo/:file', (req, res) => {
+  const t = readActionToken(req.query.t);
+  const file = path.basename(req.params.file);
+  const owner = t && db.prepare('SELECT id FROM plants WHERE photo=?').get(file);
+  if (!owner || !t.ids.includes(owner.id)) return res.status(404).end();
+  res.set('Cache-Control', 'private, max-age=86400').sendFile(path.join(PHOTO_DIR, file));
+});
 
 if (AUTH_USER && AUTH_PASS) {
   const expected = Buffer.from(`${AUTH_USER}:${AUTH_PASS}`);

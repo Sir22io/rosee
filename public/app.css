@@ -625,6 +625,19 @@ fieldset.field { border: 0; padding: 0; margin-inline: 0; min-width: 0; }
 .file-btn { position: relative; overflow: hidden; cursor: pointer; }
 .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
+/* Arrosage rapide */
+.quick { min-height: 100dvh; display: grid; place-items: center; padding: calc(var(--safe-t) + 20px) 16px calc(var(--safe-b) + 20px); background: var(--bg); }
+.quick-card { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--line-soft); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: 26px 20px 18px; text-align: center; }
+.quick-card h1 { margin: 12px 0 16px; font-size: 24px; font-weight: 800; letter-spacing: -.015em; }
+.qlist { list-style: none; margin: 0 0 14px; padding: 0; text-align: left; }
+.qrow { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.qrow .thumb { width: 48px; height: 48px; border-radius: 14px; }
+.qrow .qtxt b { display: block; font-size: 16px; }
+.qrow .qtxt span { font-size: 13px; color: var(--ink-2); }
+.qrow.done .thumb { opacity: .55; }
+.quick-card .water-hint { text-align: left; margin: 0 0 14px; }
+.quick-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+
 /* Version */
 #side-version { margin-top: 8px; padding: 0 12px; font-size: 12px; color: var(--ink); font-weight: 600; }
 #side-version .side-update { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 0 -12px; border-radius: 14px; background: var(--orange-soft); color: var(--ink); }

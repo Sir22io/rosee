@@ -61,7 +61,7 @@ Le HTTPS est obligatoire pour le service worker et les notifications.
 - Chaque jour à l'heure choisie, si une plante a besoin d'eau :
   - **jusqu'à 3 plantes**, une notification par plante, avec sa photo et le type d'arrosage ;
   - **au-delà**, une seule notification groupée.
-- Les notifications portent deux boutons : **« Arrosée »** (ou « Tout est arrosé ») et **« Dans 3 h »**. Ils marchent depuis l'écran verrouillé, sans ouvrir l'appli, grâce à un jeton signé valable 3 jours et limité aux plantes concernées. Un double appui ne crée pas de doublon. Les boutons s'affichent sur Android, Windows et macOS. Sur iPhone, iOS ne les affiche pas : toucher la notification ouvre la plante.
+- Les notifications portent deux boutons : **« Arrosée »** (ou « Tout est arrosé ») et **« Dans 3 h »**. Ils marchent depuis l'écran verrouillé, sans ouvrir l'appli, grâce à un jeton signé valable 3 jours et limité aux plantes concernées. Un double appui ne crée pas de doublon. Les boutons s'affichent sur Android, Windows et macOS. Sur iPhone, iOS n'affiche pas ces boutons : toucher la notification ouvre un **écran d'arrosage rapide**, avec un bouton « Arrosée » par plante, « Tout est arrosé » et « Me le rappeler dans 3 h ». Cet écran fonctionne aussi sans session, grâce au même jeton.
 - Les plantes signalées par un capteur font l'objet d'une notification « À surveiller » à part.
 
 ## Repères d'entretien et saisons
