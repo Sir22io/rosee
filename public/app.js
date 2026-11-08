@@ -1,0 +1,1167 @@
+// Rosée V2 — interface « Greenhouse » (sans framework).
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const view = $('#view');
+const sheet = $('#sheet');
+const isWide = () => matchMedia('(min-width: 1024px)').matches;
+
+const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const icon = (id) => `<svg aria-hidden="true"><use href="#i-${id}"/></svg>`;
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+const fmtNum = (v, d = 0) => new Intl.NumberFormat('fr-FR', { maximumFractionDigits: d }).format(v);
+
+// ---------- API ----------
+async function api(path, opts = {}) {
+  const init = { ...opts, headers: { ...(opts.headers || {}) } };
+  if (opts.json !== undefined) {
+    init.body = JSON.stringify(opts.json);
+    init.headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(path, init);
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
+  return data;
+}
+
+const state = { plants: [], settings: null };
+async function loadPlants() { state.plants = await api('/api/plants'); return state.plants; }
+async function loadSettings() { state.settings = await api('/api/settings'); return state.settings; }
+
+// ---------- Thème ----------
+function applyTheme(t) {
+  try { localStorage.setItem('rosee-theme', t); } catch {}
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+}
+const currentTheme = () => { try { return localStorage.getItem('rosee-theme') || 'auto'; } catch { return 'auto'; } };
+
+// ---------- Dates ----------
+const fmtLong = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+const fmtShort = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtDM = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' });
+const fmtMonth = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' });
+const fmtTime = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' });
+const fmtDow = new Intl.DateTimeFormat('fr-FR', { weekday: 'short' });
+const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const daysBetween = (a, b) => Math.round((startOfDay(b) - startOfDay(a)) / 86400000);
+const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+function relPast(date) {
+  const n = daysBetween(date, new Date());
+  if (n === 0) return "aujourd'hui";
+  if (n === 1) return 'hier';
+  if (n < 7) return `il y a ${n} jours`;
+  return `le ${fmtDM.format(date)}`;
+}
+function relAgo(iso) {
+  if (!iso) return '—';
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 1) return "à l'instant";
+  if (m < 60) return `il y a ${m} min`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `il y a ${h} h`;
+  return relPast(new Date(iso));
+}
+function nextText(p) {
+  if (!p.last_watered_at) return "Aujourd'hui";
+  const d = p.days_left;
+  if (d < 0) return `En retard de ${plural(-d, 'jour', 'jours')}`;
+  if (d === 0) return "Aujourd'hui";
+  if (d === 1) return 'Demain';
+  return `Dans ${d} jours`;
+}
+
+// ---------- Éléments partagés ----------
+const HEALTH = {
+  ok: { cls: 'ok', icon: 'check-circle', text: 'En bonne santé' },
+  water: { cls: 'water', icon: 'drop', text: 'À arroser' },
+  attention: { cls: 'attention', icon: 'alert', text: 'Attention' },
+  sensor: { cls: 'sensor', icon: 'sensor', text: 'Alerte capteur' },
+};
+const badge = (p) => { const h = HEALTH[p.health] || HEALTH.ok; return `<span class="badge b-${h.cls}">${icon(h.icon)}${h.text}</span>`; };
+const needsCare = (p) => p.health !== 'ok';
+const hasSensors = (p) => Object.keys(p.sensors || {}).length > 0;
+const sensorOffline = (p) => Object.values(p.sensors || {}).some((s) => s.status !== 'ok');
+
+const METRIC = {
+  moisture: { label: 'Humidité sol', long: 'Humidité du sol', icon: 'drop', unit: '%' },
+  temperature: { label: 'Température', long: 'Température', icon: 'thermo', unit: '°C' },
+  illuminance: { label: 'Luminosité', long: 'Luminosité', icon: 'sun', unit: 'lx' },
+  humidity: { label: 'Humidité air', long: "Humidité de l'air", icon: 'air', unit: '%' },
+};
+const fmtMetric = (m, v) => (v == null ? '—' : m === 'illuminance' ? fmtNum(Math.round(v)) : m === 'temperature' ? fmtNum(v, 1) : fmtNum(Math.round(v)));
+
+function media(p) {
+  return p.photo_url
+    ? `<img src="${esc(p.photo_url)}" alt="" loading="lazy" decoding="async">`
+    : `<div class="ph">${icon('pot')}</div>`;
+}
+
+function plantCard(p) {
+  const moist = p.sensors?.moisture;
+  const conn = hasSensors(p) ? `<span class="conn ${sensorOffline(p) ? 'off' : ''}" title="${sensorOffline(p) ? 'Capteur à vérifier' : 'Capteur connecté'}">${icon('sensor')}</span>` : '';
+  return `<a class="pcard" href="#/plante/${p.id}">
+    <div class="media">${media(p)}${conn}</div>
+    <div class="body">
+      <div class="name">${esc(p.name)}</div>
+      <div class="species">${esc(p.species || p.room || ' ')}</div>
+      <div>${badge(p)}</div>
+      <div class="mini">
+        ${moist && moist.value != null ? `<span class="m1">${icon('drop-fill')}${fmtMetric('moisture', moist.value)} %</span>` : ''}
+        <span class="m2">${icon('clock')}${esc(nextText(p))}</span>
+      </div>
+    </div>
+  </a>`;
+}
+
+const LIGHTS = [
+  { v: 'ombre', label: 'Ombre', suns: 1 },
+  { v: 'mi-ombre', label: 'Mi-ombre', suns: 2 },
+  { v: 'lumineux', label: 'Lumineux', suns: 3 },
+  { v: 'soleil', label: 'Plein soleil', suns: 4 },
+];
+const lightLabel = (v) => LIGHTS.find((l) => l.v === v)?.label || '—';
+
+// ---------- Toast ----------
+let toastTimer;
+function toast(msg, action) {
+  const t = $('#toast');
+  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`;
+  if (action) t.querySelector('button').onclick = () => { t.classList.remove('show'); action.run(); };
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), action ? 6000 : 3000);
+}
+
+async function water(p, { at, quiet, after } = {}) {
+  const r = await api(`/api/plants/${p.id}/water`, { method: 'POST', json: at ? { at } : {} });
+  await loadPlants();
+  if (!quiet) {
+    toast(`${p.name} arrosée`, {
+      label: 'Annuler',
+      run: async () => {
+        await api(`/api/waterings/${r.watering_id}`, { method: 'DELETE' });
+        await loadPlants();
+        toast('Arrosage annulé');
+        render();
+      },
+    });
+  }
+  after?.();
+  return r;
+}
+
+function setTab(name) {
+  $$('[data-tab]').forEach((a) => (a.dataset.tab === name ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+}
+
+function emptyGarden() {
+  return `<div class="card empty">
+    <div class="ill">${icon('pot')}</div>
+    <h2>Bienvenue dans votre serre</h2>
+    <p>Ajoutez une première plante pour suivre ses arrosages et recevoir des rappels.</p>
+    <button class="btn" type="button" data-add>${icon('plus')}Ajouter une plante</button>
+  </div>`;
+}
+
+// ================= ACCUEIL =================
+function greeting() {
+  const h = new Date().getHours();
+  const name = state.settings?.user_name;
+  return `${h >= 18 || h < 4 ? 'Bonsoir' : 'Bonjour'}${name ? ` ${name}` : ''}`;
+}
+
+async function renderHome() {
+  setTab('home');
+  const P = state.plants;
+  const due = P.filter((p) => p.days_left <= 0).sort((a, b) => a.days_left - b.days_left);
+  const alerts = P.filter((p) => p.alerts.length);
+  const attention = P.filter(needsCare);
+  const healthy = P.filter((p) => p.health === 'ok').length;
+  const sensorsCount = P.reduce((n, p) => n + Object.keys(p.sensors || {}).length, 0);
+  const sub = attention.length
+    ? `${plural(attention.length, 'plante a', 'plantes ont')} besoin d'attention aujourd'hui`
+    : P.length ? 'Votre jardin se porte bien' : 'Votre serre est prête';
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>${esc(greeting())} ${icon('plants')}</h1><p>${esc(sub)}</p></div>
+      <div class="head-actions mobile-only"><a class="icon-btn" href="#/parametres" aria-label="Paramètres">${icon('gear')}</a></div>
+    </div>
+    ${!P.length ? emptyGarden() : `
+    <div class="home-grid">
+      <div class="kpis span-2">
+        <div class="kpi green"><div class="ico">${icon('plants')}</div><b>${P.length}</b><span>Plantes</span></div>
+        <div class="kpi teal"><div class="ico">${icon('drop')}</div><b>${due.length}</b><span>À arroser</span></div>
+        <div class="kpi red"><div class="ico">${icon('alert')}</div><b>${alerts.length}</b><span>${alerts.length > 1 ? 'Alertes' : 'Alerte'}</span></div>
+        <div class="kpi green web-only"><div class="ico">${icon('check-circle')}</div><b>${healthy}</b><span>En bonne santé</span></div>
+      </div>
+
+      <section class="card">
+        <div class="section-title"><h2>Tâches du jour</h2><a href="#/calendrier">Tout voir</a></div>
+        ${due.length ? `<ul class="tasks" id="tasks">${due.map(taskRow).join('')}</ul>`
+          : `<div class="empty-line">${icon('check-circle')}<span>Aucun arrosage prévu aujourd'hui.${nextUp()}</span></div>`}
+      </section>
+
+      <section class="card" id="conditions"></section>
+
+      ${attention.length ? `<section class="span-2">
+        <div class="section-title"><h2>Plantes à surveiller</h2><a href="#/plantes?f=care">Tout voir</a></div>
+        <div class="watch">${attention.slice(0, isWide() ? 6 : 8).map(plantCard).join('')}</div>
+      </section>` : ''}
+
+      <section class="card" id="activity"><div class="section-title"><h2>Activité récente</h2></div><div class="muted">Chargement…</div></section>
+      <section class="card web-only" id="upcoming"></section>
+    </div>`}
+  `;
+  bindAdd();
+  if (!P.length) return;
+  $$('#tasks .check').forEach((b) => (b.onclick = () => checkTask(b)));
+  renderConditions();
+  renderUpcoming();
+  try {
+    const rows = await api(`/api/waterings?from=${addDays(new Date(), -21).toISOString()}`);
+    const el = $('#activity');
+    if (!el) return;
+    el.innerHTML = `<div class="section-title"><h2>Activité récente</h2></div>${rows.length
+      ? `<ul class="activity">${rows.slice(0, 6).map((w) => `<li><span class="a-ico">${icon('drop')}</span><span><b>${esc(w.plant_name)}</b> arrosée</span><time datetime="${esc(w.at)}">${esc(relAgo(w.at))}</time></li>`).join('')}</ul>`
+      : `<div class="muted">Aucun arrosage ces trois dernières semaines.</div>`}`;
+  } catch {}
+}
+
+function nextUp() {
+  const n = state.plants.filter((p) => p.days_left > 0).sort((a, b) => a.days_left - b.days_left)[0];
+  return n ? ` Prochain : ${esc(n.name)}, ${n.days_left === 1 ? 'demain' : `dans ${n.days_left} jours`}.` : '';
+}
+
+function taskRow(p) {
+  const late = p.last_watered_at && p.days_left < 0;
+  const sub = [p.room, late ? `<span class="late">${esc(nextText(p))}</span>` : p.last_watered_at ? `arrosée ${relPast(new Date(p.last_watered_at))}` : 'jamais arrosée'].filter(Boolean).join(' · ');
+  return `<li class="task" data-id="${p.id}">
+    <span class="t-ico ${late ? 'late' : ''}">${icon('drop')}</span>
+    <a class="t-body" href="#/plante/${p.id}"><div class="t-title">Arroser ${esc(p.name)}</div><div class="t-sub">${sub}</div></a>
+    <button class="check" type="button" aria-label="Marquer ${esc(p.name)} comme arrosée">${icon('check')}</button>
+  </li>`;
+}
+
+async function checkTask(btn) {
+  const li = btn.closest('.task');
+  const p = state.plants.find((x) => x.id === Number(li.dataset.id));
+  btn.classList.add('on'); btn.disabled = true;
+  li.classList.add('is-done');
+  li.querySelector('.t-ico').className = 't-ico done';
+  try {
+    await water(p);
+    setTimeout(() => { if (currentRoute() === 'home') render(); }, 900);
+  } catch (e) {
+    btn.classList.remove('on'); btn.disabled = false; li.classList.remove('is-done');
+    toast(e.message);
+  }
+}
+
+let condRoom = null;
+function renderConditions() {
+  const el = $('#conditions');
+  if (!el) return;
+  const rooms = new Map();
+  for (const p of state.plants) {
+    for (const s of Object.values(p.sensors || {})) {
+      if (s.metric === 'moisture' || s.value == null || s.status !== 'ok') continue;
+      const r = p.room || 'Sans pièce';
+      if (!rooms.has(r)) rooms.set(r, {});
+      const bucket = rooms.get(r);
+      (bucket[s.metric] ||= new Map()).set(s.entity_id, s.value); // une entité partagée n'est comptée qu'une fois
+    }
+  }
+  if (!rooms.size) {
+    el.innerHTML = `<div class="section-title"><h2>Conditions</h2><a href="#/capteurs">Capteurs</a></div>
+      <div class="empty-line">${icon('sensor')}<span>${state.settings?.ha_configured ? 'Associez un capteur de température, de lumière ou d’humidité à une plante pour voir les conditions de la pièce.' : 'Connectez Home Assistant pour suivre la température, la lumière et l’humidité.'}</span></div>`;
+    return;
+  }
+  const names = [...rooms.keys()].sort((a, b) => Object.keys(rooms.get(b)).length - Object.keys(rooms.get(a)).length);
+  if (!condRoom || !rooms.has(condRoom)) condRoom = names[0];
+  const b = rooms.get(condRoom);
+  const avg = (m) => (b[m] ? [...b[m].values()].reduce((x, y) => x + y, 0) / b[m].size : null);
+  const tiles = ['temperature', 'humidity', 'illuminance'].filter((m) => b[m]).map((m) => `
+    <div class="metric m-${m}">${icon(METRIC[m].icon)}<b>${fmtMetric(m, avg(m))}<small>${METRIC[m].unit === '°C' ? '°C' : METRIC[m].unit}</small></b><span>${METRIC[m].label}</span></div>`).join('');
+  el.innerHTML = `<div class="section-title"><h2>Conditions <span class="soft">(${esc(condRoom)})</span></h2>
+      ${names.length > 1 ? `<button class="link-btn" type="button" id="next-room">Pièce suivante</button>` : ''}</div>
+    <div class="metrics">${tiles}</div>`;
+  $('#next-room')?.addEventListener('click', () => { condRoom = names[(names.indexOf(condRoom) + 1) % names.length]; renderConditions(); });
+}
+
+function renderUpcoming() {
+  const el = $('#upcoming');
+  if (!el) return;
+  const next = state.plants.filter((p) => p.days_left > 0 && p.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
+  el.innerHTML = `<div class="section-title"><h2>Cette semaine</h2><a href="#/calendrier">Calendrier</a></div>
+    ${next.length ? `<ul class="tasks">${next.map((p) => `<li class="task">
+      <span class="t-ico">${icon('calendar')}</span>
+      <a class="t-body" href="#/plante/${p.id}"><div class="t-title">Arroser ${esc(p.name)}</div><div class="t-sub">${esc(cap(fmtLong.format(addDays(new Date(), p.days_left))))}</div></a><span></span></li>`).join('')}</ul>`
+      : `<div class="muted">Rien de prévu dans les 7 prochains jours.</div>`}`;
+}
+
+// ================= MES PLANTES =================
+let plantFilter = 'all';
+let plantQuery = '';
+function renderPlants(params) {
+  setTab('plants');
+  if (params.get('f')) plantFilter = params.get('f');
+  if (params.has('q')) plantQuery = params.get('q');
+  const P = state.plants;
+  const rooms = [...new Set(P.map((p) => p.room).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const count = { all: P.length, water: P.filter((p) => p.days_left <= 0).length, care: P.filter(needsCare).length, alerts: P.filter((p) => p.alerts.length).length, sensors: P.filter(hasSensors).length };
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Mes plantes</h1><p>${plural(P.length, 'plante', 'plantes')} dans votre serre</p></div>
+      <div class="head-actions mobile-only"><button class="icon-btn" type="button" data-add aria-label="Ajouter une plante">${icon('plus')}</button></div>
+    </div>
+    ${!P.length ? emptyGarden() : `
+    <label class="search mobile-only">${icon('search')}<span class="visually-hidden">Rechercher</span>
+      <input type="search" id="q" placeholder="Rechercher une plante…" value="${esc(plantQuery)}" autocomplete="off"></label>
+    <div class="chips" role="toolbar" aria-label="Filtres">
+      ${[['all', `Toutes (${count.all})`], ['water', `À arroser (${count.water})`], ['alerts', `Alertes (${count.alerts})`], ['sensors', `Connectées (${count.sensors})`]]
+        .map(([k, l]) => `<button class="chip" type="button" data-f="${k}" aria-pressed="${plantFilter === k}">${l}</button>`).join('')}
+      ${rooms.map((r) => `<button class="chip" type="button" data-f="room:${esc(r)}" aria-pressed="${plantFilter === 'room:' + r}">${esc(r)}</button>`).join('')}
+    </div>
+    <div class="grid" id="grid"></div>`}
+  `;
+  bindAdd();
+  if (!P.length) return;
+  const draw = () => {
+    const q = plantQuery.trim().toLowerCase();
+    const list = P.filter((p) => {
+      if (plantFilter === 'water' && p.days_left > 0) return false;
+      if (plantFilter === 'care' && !needsCare(p)) return false;
+      if (plantFilter === 'alerts' && !p.alerts.length) return false;
+      if (plantFilter === 'sensors' && !hasSensors(p)) return false;
+      if (plantFilter.startsWith('room:') && p.room !== plantFilter.slice(5)) return false;
+      if (q && !`${p.name} ${p.species} ${p.room}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    $('#grid').innerHTML = list.length ? list.map(plantCard).join('') : `<p class="muted" style="grid-column:1/-1">Aucune plante ne correspond.</p>`;
+  };
+  draw();
+  $('#q')?.addEventListener('input', (e) => { plantQuery = e.target.value; $('#global-q').value = plantQuery; draw(); });
+  $$('.chip').forEach((b) => (b.onclick = () => {
+    plantFilter = b.dataset.f;
+    $$('.chip').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    draw();
+  }));
+  window.__drawPlants = draw;
+}
+
+// ================= FICHE PLANTE =================
+let detailTab = 'suivi';
+let chartMetric = null;
+let chartHours = 168;
+async function renderDetail(id) {
+  setTab('plants');
+  let p;
+  try { p = await api(`/api/plants/${id}`); }
+  catch {
+    view.innerHTML = `<div class="card empty"><h2>Plante introuvable</h2><p>Elle a peut-être été supprimée.</p><a class="btn" href="#/plantes">Voir mes plantes</a></div>`;
+    return;
+  }
+  view.classList.add('flush-top');
+  const metrics = Object.keys(METRIC).filter((m) => p.sensors[m]);
+  if (!metrics.includes(chartMetric)) chartMetric = metrics[0] || null;
+  const frac = !p.last_watered_at ? 0 : Math.max(0, Math.min(1, p.days_left / p.interval_days));
+  const ringColor = p.days_left <= 0 ? 'var(--orange)' : 'var(--teal)';
+  const C = 2 * Math.PI * 31;
+
+  view.innerHTML = `
+    <nav class="crumbs"><a href="#/plantes">Mes plantes</a>${icon('next')}<span>${esc(p.name)}</span></nav>
+    <div class="d-wrap">
+      <div class="d-left">
+        <div class="d-hero">
+          <div class="media">${media(p)}</div>
+          <div class="bar">
+            <button class="icon-btn float" type="button" id="back" aria-label="Retour">${icon('back')}</button>
+            <div class="right"><button class="icon-btn float" type="button" id="edit" aria-label="Modifier">${icon('edit')}</button></div>
+          </div>
+        </div>
+        <div class="card d-id">
+          <div class="top">
+            <div>
+              <h1>${esc(p.name)}</h1>
+              ${p.species ? `<div class="sp">${esc(p.species)}</div>` : ''}
+              <div class="meta">${p.room ? `<span class="room">${icon('pin')}${esc(p.room)}</span>` : ''}${badge(p)}</div>
+            </div>
+            <div class="ring" role="img" aria-label="${esc(nextText(p))}">
+              <svg viewBox="0 0 74 74"><circle class="track" cx="37" cy="37" r="31" fill="none" stroke-width="7"/>
+                <circle class="val" cx="37" cy="37" r="31" fill="none" stroke="${ringColor}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - Math.max(frac, 0.02))}"/></svg>
+              <div class="lbl"><b>${p.days_left <= 0 ? '0' : p.days_left} j</b><span>avant arrosage</span></div>
+            </div>
+          </div>
+          <div class="d-actions">
+            <button class="btn" type="button" id="water">${icon('drop')}Arroser</button>
+            <button class="icon-btn more-btn" type="button" id="more" aria-label="Plus d'actions" style="width:46px;height:46px">${icon('more')}</button>
+          </div>
+          <div class="d-quick">
+            <button class="btn secondary" type="button" data-act="date">${icon('calendar')}Arrosée un autre jour</button>
+            <button class="btn secondary" type="button" data-act="edit">${icon('edit')}Modifier la fiche</button>
+            <button class="btn secondary" type="button" data-act="sensors">${icon('sensor')}${metrics.length ? 'Gérer les capteurs' : 'Connecter un capteur'}</button>
+            <button class="btn danger" type="button" data-act="delete">${icon('trash')}Supprimer</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-right stack">
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" data-tab-id="suivi" aria-selected="${detailTab === 'suivi'}">Suivi</button>
+          <button type="button" role="tab" data-tab-id="historique" aria-selected="${detailTab === 'historique'}">Historique</button>
+        </div>
+        <div id="tab-body"></div>
+      </div>
+    </div>
+  `;
+
+  $('#back').onclick = () => (history.length > 1 ? history.back() : (location.hash = '#/plantes'));
+  $('#edit').onclick = () => openPlantForm(p);
+  $('#more').onclick = () => openActions(p);
+  $('#water').onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    try { await water(p); renderDetail(id); } catch (err) { toast(err.message); e.currentTarget.disabled = false; }
+  };
+  $$('.d-quick [data-act]').forEach((b) => (b.onclick = () => runAction(b.dataset.act, p)));
+  $$('[data-tab-id]').forEach((b) => (b.onclick = () => {
+    detailTab = b.dataset.tabId;
+    $$('[data-tab-id]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+    drawTab(p, metrics);
+  }));
+  drawTab(p, metrics);
+}
+
+function drawTab(p, metrics) {
+  const body = $('#tab-body');
+  if (detailTab === 'historique') {
+    const h = p.history;
+    body.innerHTML = `<section class="card">
+      <div class="section-title"><h2>Arrosages <span class="soft">(${h.length})</span></h2></div>
+      ${h.length ? `<ul class="timeline">${h.map((w, i) => {
+        const d = new Date(w.at);
+        const gap = h[i + 1] ? daysBetween(new Date(h[i + 1].at), d) : null;
+        return `<li><span class="dot"></span>
+          <span class="when"><b>Arrosage</b><span>${esc(cap(fmtLong.format(d)))} à ${esc(fmtTime.format(d))}</span></span>
+          ${gap !== null ? `<span class="gap">+${gap} j</span>` : ''}
+          <button type="button" data-del="${w.id}" aria-label="Supprimer cet arrosage">${icon('close')}</button></li>`;
+      }).join('')}</ul>` : `<div class="muted">Aucun arrosage enregistré pour le moment.</div>`}
+    </section>`;
+    $$('[data-del]', body).forEach((b) => (b.onclick = async () => {
+      await api(`/api/waterings/${b.dataset.del}`, { method: 'DELETE' });
+      await loadPlants();
+      toast('Arrosage supprimé');
+      renderDetail(p.id);
+    }));
+    return;
+  }
+
+  const t = p.effective_targets;
+  const last = p.last_watered_at ? new Date(p.last_watered_at) : null;
+  body.innerHTML = `
+    ${p.alerts.length ? `<section class="card"><div class="section-title"><h2>Conseils</h2></div>
+      <ul class="advice">${p.alerts.map((a) => `<li class="lv-${a.level}">${icon(a.level === 'sensor' ? 'sensor' : 'alert')}<span>${esc(adviceText(a))}</span></li>`).join('')}</ul></section>` : ''}
+
+    ${metrics.length ? `<section class="card">
+      <div class="section-title"><h2>Conditions actuelles</h2><span class="muted" style="font-size:12.5px">${esc(relAgo(Object.values(p.sensors)[0]?.updated_at))}</span></div>
+      <div class="metrics ${metrics.length > 3 ? 'four' : ''}">${metrics.map((m) => metricTile(m, p.sensors[m])).join('')}</div>
+    </section>
+    <section class="card">
+      <div class="chart-head"><h2 style="margin:0;font-size:18px">Évolution</h2>
+        <div class="seg-sm" role="group" aria-label="Période">
+          <button type="button" data-h="24" aria-pressed="${chartHours === 24}">24 h</button>
+          <button type="button" data-h="168" aria-pressed="${chartHours === 168}">7 jours</button>
+        </div></div>
+      ${metrics.length > 1 ? `<div class="metric-tabs">${metrics.map((m) => `<button type="button" data-m="${m}" aria-pressed="${m === chartMetric}">${icon(METRIC[m].icon)}${METRIC[m].label}</button>`).join('')}</div>` : ''}
+      <div id="chart"></div>
+    </section>` : `<section class="card data">
+      <div class="ha-card none" style="align-items:flex-start"><div class="ha-ico">${icon('sensor')}</div>
+        <div><b>Aucun capteur</b><span>Associez un capteur Home Assistant pour suivre l'humidité du sol, la lumière et la température de cette plante.</span>
+        <div style="margin-top:10px"><button class="btn sm" type="button" id="connect">${icon('link')}Connecter un capteur</button></div></div></div>
+    </section>`}
+
+    <section class="card">
+      <div class="section-title"><h2>Résumé</h2></div>
+      <div class="summary">
+        <div><span>Prochain arrosage</span><b>${esc(nextText(p))}</b></div>
+        <div><span>Dernier arrosage</span><b>${last ? esc(cap(relPast(last))) : 'Jamais'}</b></div>
+        <div><span>Fréquence</span><b>${p.interval_days === 1 ? 'Chaque jour' : `Tous les ${p.interval_days} jours`}</b></div>
+        <div><span>Lumière</span><b>${esc(lightLabel(p.light))}</b></div>
+        ${metrics.includes('moisture') ? `<div><span>Humidité du sol cible</span><b>${t.moisture_min}–${t.moisture_max} %</b></div>` : ''}
+        ${metrics.includes('temperature') ? `<div><span>Température idéale</span><b>${t.temp_min}–${t.temp_max} °C</b></div>` : ''}
+      </div>
+    </section>
+
+    ${p.notes ? `<section class="card"><div class="section-title"><h2>Notes</h2></div><p class="notes">${esc(p.notes)}</p></section>` : ''}
+  `;
+  $('#connect')?.addEventListener('click', () => openPlantForm(p, { focusSensors: true }));
+  $$('[data-h]', body).forEach((b) => (b.onclick = () => { chartHours = Number(b.dataset.h); $$('[data-h]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); loadChart(p); }));
+  $$('[data-m]', body).forEach((b) => (b.onclick = () => { chartMetric = b.dataset.m; $$('[data-m]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); loadChart(p); }));
+  if (metrics.length) loadChart(p);
+}
+
+function adviceText(a) {
+  if (a.text.startsWith('Sol trop sec')) return `${a.text} : un arrosage est conseillé, même si la date prévue n'est pas atteinte.`;
+  if (a.text.startsWith('Sol trop humide')) return `${a.text} : attendez avant le prochain arrosage.`;
+  if (a.text.startsWith('Lumière faible')) return `${a.text} : rapprochez la plante d'une fenêtre.`;
+  return a.text;
+}
+
+function metricTile(m, s) {
+  let st = '', cls = 'ok';
+  if (s.status === 'offline' || s.status === 'missing') { st = 'Hors ligne'; cls = 'off'; }
+  else if (s.status === 'stale') { st = 'Pas à jour'; cls = 'off'; }
+  else if (s.range === 'low') { st = m === 'illuminance' ? 'Faible sur 24 h' : 'Trop bas'; cls = 'low'; }
+  else if (s.range === 'high') { st = 'Trop haut'; cls = 'high'; }
+  else st = 'Normal';
+  return `<div class="metric m-${m}">${icon(METRIC[m].icon)}
+    <b>${fmtMetric(m, s.value)}<small>${METRIC[m].unit}</small></b><span>${METRIC[m].long}</span>
+    <span class="state ${cls}">${st}</span></div>`;
+}
+
+async function loadChart(p) {
+  const box = $('#chart');
+  if (!box || !chartMetric) return;
+  box.innerHTML = `<div class="chart-msg">Chargement…</div>`;
+  try {
+    const d = await api(`/api/plants/${p.id}/history?metric=${chartMetric}&hours=${chartHours}`);
+    if (!$('#chart')) return;
+    if (d.points.length < 2) { box.innerHTML = `<div class="chart-msg">Pas encore assez de mesures sur cette période.</div>`; return; }
+    const t = p.effective_targets;
+    const band = chartMetric === 'moisture' ? [t.moisture_min, t.moisture_max] : chartMetric === 'temperature' ? [t.temp_min, t.temp_max] : null;
+    drawChart(box, d.points, { metric: chartMetric, hours: chartHours, band });
+  } catch (e) {
+    box.innerHTML = `<div class="chart-msg">Historique indisponible : ${esc(e.message)}</div>`;
+  }
+}
+
+// Graphique en aire, une seule série, avec plage cible et info-bulle
+function drawChart(box, pts, { metric, hours, band }) {
+  const W = Math.max(280, box.clientWidth || 320), H = 190;
+  const m = { l: 36, r: 8, t: 26, b: 22 };
+  const x0 = pts[0].t, x1 = Date.now();
+  let ymin, ymax;
+  const vals = pts.map((p) => p.v);
+  if (metric === 'moisture' || metric === 'humidity') { ymin = 0; ymax = 100; }
+  else if (metric === 'illuminance') { ymin = 0; ymax = Math.max(500, Math.ceil((Math.max(...vals) * 1.15) / 500) * 500); }
+  else { ymin = Math.floor(Math.min(...vals, band?.[0] ?? Infinity) - 1); ymax = Math.ceil(Math.max(...vals, band?.[1] ?? -Infinity) + 1); }
+  const X = (t) => m.l + ((t - x0) / (x1 - x0)) * (W - m.l - m.r);
+  const Y = (v) => m.t + (1 - (v - ymin) / (ymax - ymin)) * (H - m.t - m.b);
+  const ticks = 4;
+  let grid = '';
+  for (let i = 0; i <= ticks; i++) {
+    const v = ymin + ((ymax - ymin) * i) / ticks;
+    const y = Y(v);
+    grid += `<line class="grid-l" x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}"/><text class="axis-t" x="${m.l - 6}" y="${y + 4}" text-anchor="end">${metric === 'illuminance' && v >= 1000 ? fmtNum(v / 1000, 1) + 'k' : fmtNum(Math.round(v))}</text>`;
+  }
+  let xl = '';
+  if (hours > 48) {
+    for (let d = startOfDay(addDays(new Date(x0), 1)); d <= x1; d = addDays(d, 1)) {
+      const x = X(d.getTime());
+      if (x > W - 18) continue;
+      xl += `<text class="axis-t" x="${x}" y="${H - 4}" text-anchor="middle">${esc(cap(fmtDow.format(d).replace('.', '')))}</text>`;
+    }
+  } else {
+    const s = new Date(x0); s.setMinutes(0, 0, 0); s.setHours(Math.ceil(s.getHours() / 6) * 6);
+    for (let d = s; d <= x1; d = new Date(d.getTime() + 6 * 3600e3)) {
+      const x = X(d.getTime());
+      if (x < m.l + 10 || x > W - 18) continue;
+      xl += `<text class="axis-t" x="${x}" y="${H - 4}" text-anchor="middle">${String(d.getHours()).padStart(2, '0')} h</text>`;
+    }
+  }
+  const line = pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join('');
+  const area = `${line}L${X(pts.at(-1).t).toFixed(1)},${Y(ymin)}L${X(pts[0].t).toFixed(1)},${Y(ymin)}Z`;
+  const bandRect = band ? `<rect class="band" x="${m.l}" width="${W - m.l - m.r}" y="${Y(Math.min(band[1], ymax))}" height="${Math.max(0, Y(Math.max(band[0], ymin)) - Y(Math.min(band[1], ymax)))}" rx="4"/>` : '';
+  box.innerHTML = `<div class="chart" role="img" aria-label="${esc(METRIC[metric].long)} sur ${hours > 48 ? '7 jours' : '24 heures'}">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bandRect}${grid}${xl}
+      <path class="area" d="${area}"/><path class="line" d="${line}"/>
+      <line class="cross" y1="${m.t}" y2="${H - m.b}" x1="-10" x2="-10" visibility="hidden"/>
+      <circle class="pt" r="4.5" cx="-10" cy="-10" visibility="hidden"/></svg>
+    <div class="tip" hidden></div></div>
+    ${band ? `<div class="chart-note"><i></i>Plage cible ${band[0]}–${band[1]} ${METRIC[metric].unit}</div>` : ''}`;
+  const chart = $('.chart', box), svg = $('svg', chart), cross = $('.cross', svg), dot = $('.pt', svg), tip = $('.tip', chart);
+  const fmtWhen = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const move = (e) => {
+    const r = svg.getBoundingClientRect();
+    const sx = ((e.clientX - r.left) / r.width) * W;
+    let best = pts[0], bd = Infinity;
+    for (const p of pts) { const d = Math.abs(X(p.t) - sx); if (d < bd) { bd = d; best = p; } }
+    const x = X(best.t), y = Y(best.v);
+    cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('visibility', 'visible');
+    tip.hidden = false;
+    tip.innerHTML = `${fmtMetric(metric, best.v)} ${METRIC[metric].unit}<span>${esc(fmtWhen.format(new Date(best.t)))}</span>`;
+    tip.style.left = `${Math.min(Math.max((x / W) * r.width, 50), r.width - 50)}px`;
+  };
+  const leave = () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.hidden = true; };
+  chart.addEventListener('pointermove', move);
+  chart.addEventListener('pointerdown', move);
+  chart.addEventListener('pointerleave', leave);
+}
+
+// Actions de la fiche
+function openActions(p) {
+  const hasS = Object.keys(p.sensors || {}).length;
+  openSheet(`<div class="sheet-inner">
+    <div class="sheet-head"><h2 id="sheet-title">${esc(p.name)}</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="menu-list">
+      <button type="button" data-act="date">${icon('calendar')}Arrosée un autre jour</button>
+      <button type="button" data-act="edit">${icon('edit')}Modifier la fiche</button>
+      <button type="button" data-act="sensors">${icon('sensor')}${hasS ? 'Gérer les capteurs' : 'Connecter un capteur'}</button>
+      <button type="button" data-act="delete" class="danger">${icon('trash')}Supprimer la plante</button>
+    </div></div>`, (root) => {
+    $$('[data-act]', root).forEach((b) => (b.onclick = () => { sheet.close(); runAction(b.dataset.act, p); }));
+  });
+}
+function runAction(act, p) {
+  if (act === 'date') openWaterDate(p);
+  else if (act === 'edit') openPlantForm(p);
+  else if (act === 'sensors') openPlantForm(p, { focusSensors: true });
+  else if (act === 'delete') confirmDelete(p);
+}
+
+// ================= CALENDRIER =================
+let calMonth = startOfDay(new Date()); calMonth.setDate(1);
+let calSelected = startOfDay(new Date());
+async function renderCalendar() {
+  setTab('calendar');
+  const first = new Date(calMonth);
+  const gridStart = addDays(first, -((first.getDay() + 6) % 7));
+  const gridEnd = addDays(gridStart, 41);
+  const today = startOfDay(new Date());
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>Calendrier</h1><p>Arrosages réalisés et prévus</p></div>
+      <div class="head-actions"><button class="btn secondary sm green" type="button" id="feed">${icon('link')}<span>Google Agenda</span></button></div>
+    </div>
+    <div class="cal-layout">
+      <section class="card">
+        <div class="cal-head">
+          <h2>${esc(fmtMonth.format(first))}</h2>
+          <div class="nav">
+            <button class="icon-btn" type="button" id="prev" aria-label="Mois précédent">${icon('back')}</button>
+            <button class="btn secondary sm web-only" type="button" id="today">Aujourd'hui</button>
+            <button class="icon-btn" type="button" id="next" aria-label="Mois suivant">${icon('next')}</button>
+          </div>
+        </div>
+        <div class="cal-grid" id="cal"><div class="skeleton" style="grid-column:1/-1;padding:40px 0">Chargement…</div></div>
+        <div class="legend"><span><i style="background:var(--ink-3)"></i>Fait</span><span><i style="background:var(--teal)"></i>Prévu</span><span><i style="background:var(--orange)"></i>En retard</span></div>
+      </section>
+      <section class="card cal-side" id="day-panel"></section>
+    </div>`;
+  $('#prev').onclick = () => { calMonth.setMonth(calMonth.getMonth() - 1); renderCalendar(); };
+  $('#next').onclick = () => { calMonth.setMonth(calMonth.getMonth() + 1); renderCalendar(); };
+  $('#today').onclick = () => { calMonth = startOfDay(new Date()); calMonth.setDate(1); calSelected = startOfDay(new Date()); renderCalendar(); };
+  $('#feed').onclick = openFeed;
+
+  // Événements : arrosages faits (API) + projections à partir d'aujourd'hui
+  const events = new Map();
+  const push = (key, ev) => { if (!events.has(key)) events.set(key, []); events.get(key).push(ev); };
+  let done = [];
+  try { done = await api(`/api/waterings?from=${gridStart.toISOString()}&to=${addDays(gridEnd, 1).toISOString()}`); } catch {}
+  for (const w of done) { const d = new Date(w.at); push(dayKey(d), { type: 'done', plant_id: w.plant_id, name: w.plant_name, room: w.room, at: d, id: w.id }); }
+  for (const p of state.plants) {
+    let first = true;
+    for (let d = addDays(today, Math.max(0, p.days_left)); d <= gridEnd; d = addDays(d, p.interval_days)) {
+      push(dayKey(d), { type: first && p.days_left < 0 ? 'late' : 'planned', plant_id: p.id, name: p.name, room: p.room, plant: p });
+      first = false;
+    }
+  }
+  const order = { late: 0, planned: 1, done: 2 };
+  for (const list of events.values()) list.sort((a, b) => order[a.type] - order[b.type] || a.name.localeCompare(b.name));
+
+  const dows = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+  let html = dows.map((d) => `<div class="dow">${d}</div>`).join('');
+  for (let i = 0; i < 42; i++) {
+    const d = addDays(gridStart, i);
+    const key = dayKey(d);
+    const ev = events.get(key) || [];
+    const cls = [d.getMonth() !== first.getMonth() ? 'out' : '', key === dayKey(today) ? 'today' : ''].join(' ');
+    html += `<button type="button" class="day ${cls}" data-key="${key}" aria-pressed="${key === dayKey(calSelected)}" aria-label="${esc(fmtLong.format(d))}, ${plural(ev.length, 'soin', 'soins')}">
+      <span class="n">${d.getDate()}</span>
+      <span class="dots">${ev.slice(0, 3).map((e) => `<i class="${e.type}"></i>`).join('')}</span>
+      <span class="pills">${ev.slice(0, 3).map((e) => `<span class="${e.type}">${e.type === 'done' ? '✓ ' : ''}${esc(e.name)}</span>`).join('')}${ev.length > 3 ? `<em>+${ev.length - 3}</em>` : ''}</span>
+    </button>`;
+  }
+  $('#cal').innerHTML = html;
+  $$('#cal .day').forEach((b) => (b.onclick = () => {
+    calSelected = new Date(b.dataset.key + 'T00:00:00');
+    $$('#cal .day').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    drawDay(events);
+  }));
+  drawDay(events);
+}
+
+function drawDay(events) {
+  const el = $('#day-panel');
+  const key = dayKey(calSelected);
+  const today = dayKey(new Date());
+  const list = events.get(key) || [];
+  el.innerHTML = `<div class="section-title"><h2>${esc(cap(fmtLong.format(calSelected)))}</h2></div>
+    ${list.length ? `<ul class="tasks">${list.map((e) => {
+      const canCheck = e.type !== 'done' && key === today;
+      const sub = e.type === 'done' ? `Fait à ${fmtTime.format(e.at)}` : e.type === 'late' ? `<span class="late">${esc(nextText(e.plant))}</span>` : key < today ? 'Non réalisé' : 'Prévu';
+      return `<li class="task ${e.type === 'done' ? 'is-done' : ''}" data-id="${e.plant_id}">
+        <span class="t-ico ${e.type === 'done' ? 'done' : e.type === 'late' ? 'late' : ''}">${icon(e.type === 'done' ? 'check' : 'drop')}</span>
+        <a class="t-body" href="#/plante/${e.plant_id}"><div class="t-title">Arroser ${esc(e.name)}</div><div class="t-sub">${[e.room ? esc(e.room) : '', sub].filter(Boolean).join(' · ')}</div></a>
+        ${canCheck ? `<button class="check" type="button" aria-label="Marquer ${esc(e.name)} comme arrosée">${icon('check')}</button>` : '<span></span>'}
+      </li>`;
+    }).join('')}</ul>` : `<div class="empty-line">${icon('calendar')}<span>Aucun soin ce jour-là.</span></div>`}`;
+  $$('.check', el).forEach((b) => (b.onclick = async () => {
+    const p = state.plants.find((x) => x.id === Number(b.closest('.task').dataset.id));
+    b.classList.add('on'); b.disabled = true;
+    await water(p);
+    renderCalendar();
+  }));
+}
+
+async function openFeed() {
+  const { path, base } = await api('/api/calendar-feed');
+  const url = (base || location.origin) + path;
+  openSheet(`<div class="sheet-inner">
+    <div class="sheet-head"><h2 id="sheet-title">Afficher dans Google Agenda</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="sheet-body">
+      <p class="muted" style="margin:0">Abonnez Google Agenda à ce lien : vos arrosages prévus (60 jours) apparaîtront à côté de vos rendez-vous, sur tous vos appareils.</p>
+      <div class="feed"><code id="feed-url">${esc(url)}</code><button class="icon-btn" type="button" id="copy" aria-label="Copier le lien">${icon('link')}</button></div>
+      <ol class="steps">
+        <li>Sur ordinateur, ouvrez Google Agenda, puis <b>Autres agendas</b> → <b>+</b> → <b>À partir de l'URL</b>.</li>
+        <li>Collez le lien et validez. L'agenda « Rosée — arrosages » apparaît aussi sur votre téléphone.</li>
+        <li>Google met à jour les agendas abonnés toutes les quelques heures.</li>
+      </ol>
+      <div class="hint"><b>Important :</b> Google lit ce lien depuis Internet. ${base ? 'Ce lien utilise l\u2019adresse publique configurée.' : 'Configurez <code>FEED_BASE_URL</code> avec une adresse joignable depuis Internet (voir README).'} Toute personne qui a le lien voit les noms de vos plantes et les dates.</div>
+    </div>
+    <div class="sheet-foot" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn secondary" type="button" id="rotate">${icon('refresh')}Nouveau lien</button>
+      <button class="btn" type="button" id="copy2">Copier le lien</button>
+    </div></div>`, (root) => {
+    const copy = async () => {
+      try { await navigator.clipboard.writeText($('#feed-url', root).textContent); toast('Lien copié'); }
+      catch { const r = document.createRange(); r.selectNodeContents($('#feed-url', root)); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Sélectionné : copiez-le'); }
+    };
+    $('#copy', root).onclick = copy;
+    $('#copy2', root).onclick = copy;
+    $('#rotate', root).onclick = async () => {
+      const r = await api('/api/calendar-feed/rotate', { method: 'POST' });
+      $('#feed-url', root).textContent = (r.base || location.origin) + r.path;
+      toast("Nouveau lien créé : l'ancien ne fonctionne plus");
+    };
+  });
+}
+
+// ================= CAPTEURS =================
+async function renderSensors() {
+  setTab('sensors');
+  view.innerHTML = `<div class="page-head"><div><h1>Capteurs</h1><p>Mesures lues dans Home Assistant</p></div></div><div class="skeleton">Chargement…</div>`;
+  const [st, data] = await Promise.all([api('/api/ha/status'), api('/api/sensors')]);
+  updateSideHA(st);
+  const list = data.sensors;
+  let haBlock;
+  if (!st.configured) {
+    haBlock = `<section class="card"><div class="ha-card none"><div class="ha-ico">${icon('sensor')}</div><div><b>Home Assistant n'est pas connecté</b><span>Rosée lit les capteurs de vos plantes via l'API de Home Assistant.</span></div></div>
+      <ol class="steps">
+        <li>Dans Home Assistant : <b>Profil</b> → <b>Sécurité</b> → <b>Jetons d'accès longue durée</b> → <b>Créer un jeton</b>.</li>
+        <li>Dans le fichier <code>.env</code>, renseignez <code>HA_URL</code> (ex. <code>http://ip-de-home-assistant:8123</code>) et <code>HA_TOKEN</code>.</li>
+        <li>Relancez : <code>docker compose up -d</code>. Associez ensuite un capteur depuis la fiche d'une plante.</li>
+      </ol></section>`;
+  } else if (!st.ok) {
+    haBlock = `<section class="card"><div class="ha-card ko"><div class="ha-ico">${icon('alert')}</div><div><b>Home Assistant injoignable</b><span>${esc(st.error || 'Erreur inconnue')}. Vérifiez <code>HA_URL</code>, le jeton et les règles du pare-feu entre Rosée et Home Assistant.</span></div></div></section>`;
+  } else {
+    haBlock = `<section class="card"><div class="ha-card ok"><div class="ha-ico">${icon('check-circle')}</div><div><b>Home Assistant connecté</b><span>${esc(st.location || 'Maison')} · version ${esc(st.version || '?')} · ${plural(list.length, 'capteur associé', 'capteurs associés')}</span></div></div></section>`;
+  }
+  const order = { offline: 0, missing: 0, stale: 1, ok: 2 };
+  list.sort((a, b) => (order[a.status] ?? 2) - (order[b.status] ?? 2) || a.plant_name.localeCompare(b.plant_name));
+  view.innerHTML = `
+    <div class="page-head"><div><h1>Capteurs</h1><p>Mesures lues dans Home Assistant</p></div></div>
+    <div class="stack-lg">
+      ${haBlock}
+      ${list.length ? `<div class="sensors">${list.map(sensorCard).join('')}</div>`
+        : st.configured ? `<section class="card empty"><div class="ill">${icon('sensor')}</div><h2>Aucun capteur associé</h2><p>Ouvrez la fiche d'une plante, puis « Connecter un capteur » pour choisir ses entités Home Assistant.</p><a class="btn" href="#/plantes">Choisir une plante</a></section>` : ''}
+    </div>`;
+}
+
+function sensorCard(s) {
+  const M = METRIC[s.metric];
+  const off = s.status === 'offline' || s.status === 'missing';
+  const stale = s.status === 'stale';
+  const status = off ? `<span class="status-dot off">${s.status === 'missing' ? 'Entité introuvable' : 'Hors ligne'}</span>` : stale ? `<span class="status-dot warn">Pas à jour</span>` : `<span class="status-dot ok">Connecté</span>`;
+  const bat = s.battery != null ? `<span class="bat ${s.battery <= 15 ? 'low' : ''}">${icon('battery')}${fmtNum(s.battery)} %</span>` : '';
+  const color = { moisture: 'var(--teal)', temperature: 'var(--red)', illuminance: 'var(--orange)', humidity: 'var(--green-2)' }[s.metric];
+  return `<a class="card sensor" href="#/plante/${s.plant_id}">
+    <div class="s-ico" style="color:${color}">${icon(M.icon)}</div>
+    <div style="min-width:0"><div class="s-name">${esc(s.name || s.entity_id)}</div>
+      <div class="s-sub">${esc(s.plant_name)}${s.room ? ` · ${esc(s.room)}` : ''} · ${esc(M.long)}</div>
+      <div class="s-state">${status}${bat}</div></div>
+    <div class="s-val"><b>${off ? '—' : fmtMetric(s.metric, s.value)}</b><small> ${off ? '' : esc(s.unit || M.unit)}</small><span>${esc(relAgo(s.updated_at))}</span></div>
+  </a>`;
+}
+
+function updateSideHA(st) {
+  const el = $('#side-ha');
+  if (!el) return;
+  if (!st?.configured) { el.innerHTML = `<a class="side-ha" href="#/capteurs">${icon('sensor')}<span><b>Home Assistant</b>Non connecté</span></a>`; return; }
+  el.innerHTML = `<a class="side-ha" href="#/capteurs"><span class="status-dot ${st.ok ? 'ok' : 'off'}"></span><span><b>Home Assistant</b>${st.ok ? 'Connecté' : 'Injoignable'}</span></a>`;
+}
+
+// ================= PARAMÈTRES =================
+async function renderSettings() {
+  setTab('settings');
+  const st = await loadSettings();
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const sub = supported ? await currentSubscription() : null;
+  const on = !!sub && Notification.permission === 'granted';
+  const denied = supported && Notification.permission === 'denied';
+
+  let push;
+  if (!supported && isIOS && !standalone) push = `<div class="hint"><b>Sur iPhone</b>, installez d'abord Rosée : <b>Partager</b> → <b>Sur l'écran d'accueil</b>, puis ouvrez-la depuis son icône et revenez ici.</div>`;
+  else if (!supported) push = `<div class="hint">Ce navigateur ne gère pas les notifications. Ouvrez Rosée en HTTPS dans Chrome, Edge, Firefox ou Safari récent.</div>`;
+  else push = `<div class="row"><div class="txt"><b>${on ? 'Cet appareil reçoit les rappels' : 'Rappels sur cet appareil'}</b><span>${on ? 'Notifications activées' : denied ? 'Bloquées dans les réglages du navigateur' : 'Désactivés'}</span></div>
+      ${on ? `<button class="btn secondary sm" type="button" id="unsub">Désactiver</button>` : `<button class="btn sm" type="button" id="sub" ${denied ? 'disabled' : ''}>${icon('bell')}Activer</button>`}</div>
+    ${on ? `<div class="row"><div class="txt"><b>Tester</b><span>Envoie la notification du jour à vos appareils</span></div><button class="btn secondary sm" type="button" id="test">Envoyer</button></div>` : ''}`;
+
+  view.innerHTML = `
+    <div class="page-head"><div><h1>Paramètres</h1><p>Rappels, agenda, apparence et connexions</p></div></div>
+    <div class="settings-grid">
+      <section class="card">
+        <div class="section-title"><h2>${icon('bell')} Rappels</h2></div>
+        <div class="rows">
+          ${push}
+          <div class="row"><div class="txt"><b>Rappel quotidien</b><span>Seulement si une plante a besoin de vous</span></div>
+            <label class="switch"><input type="checkbox" id="enabled" ${st.reminder_enabled ? 'checked' : ''} aria-label="Rappel quotidien"><span></span></label></div>
+          <div class="row"><div class="txt"><b>Heure</b><span>Fuseau ${esc(st.timezone)}</span></div>
+            <input class="input time-input" type="time" id="time" value="${esc(st.reminder_time)}" aria-label="Heure du rappel"></div>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin:10px 0 0">${plural(st.devices, 'appareil abonné', 'appareils abonnés')}</p>
+      </section>
+
+      <section class="card">
+        <div class="section-title"><h2>Profil et apparence</h2></div>
+        <div class="rows">
+          <div class="row"><div class="txt"><b>Prénom</b><span>Pour l'accueil</span></div>
+            <input class="input" style="max-width:170px" id="uname" value="${esc(st.user_name)}" maxlength="40" placeholder="Votre prénom" autocomplete="given-name"></div>
+          <div class="row" style="flex-wrap:wrap"><div class="txt"><b>Thème</b><span>Clair, sombre ou selon l'appareil</span></div>
+            <div class="seg-sm" role="group" aria-label="Thème">
+              ${[['auto', 'Auto'], ['light', 'Clair'], ['dark', 'Sombre']].map(([k, l]) => `<button type="button" data-theme-opt="${k}" aria-pressed="${currentTheme() === k}">${l}</button>`).join('')}
+            </div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-title"><h2>Agenda</h2></div>
+        <div class="rows"><div class="row"><div class="txt"><b>Google Agenda</b><span>Voir les arrosages prévus à côté de vos rendez-vous</span></div>
+          <button class="btn secondary sm green" type="button" id="feed">${icon('link')}Configurer</button></div></div>
+      </section>
+
+      <section class="card" id="ha-settings"><div class="section-title"><h2>Home Assistant</h2></div><div class="muted">Vérification…</div></section>
+    </div>`;
+
+  $('#enabled').onchange = async (e) => { await api('/api/settings', { method: 'PUT', json: { reminder_enabled: e.target.checked } }); toast(e.target.checked ? 'Rappel quotidien activé' : 'Rappel quotidien coupé'); };
+  $('#time').onchange = async (e) => { await api('/api/settings', { method: 'PUT', json: { reminder_time: e.target.value } }); toast(`Rappel à ${e.target.value}`); };
+  $('#uname').onchange = async (e) => { await api('/api/settings', { method: 'PUT', json: { user_name: e.target.value } }); await loadSettings(); toast('Prénom enregistré'); };
+  $$('[data-theme-opt]').forEach((b) => (b.onclick = () => { applyTheme(b.dataset.themeOpt); $$('[data-theme-opt]').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); }));
+  $('#feed').onclick = openFeed;
+  $('#sub')?.addEventListener('click', async (e) => { e.currentTarget.disabled = true; try { await subscribe(); toast('Rappels activés sur cet appareil'); } catch (err) { toast(err.message); } renderSettings(); });
+  $('#unsub')?.addEventListener('click', async () => { await unsubscribe(); toast('Rappels désactivés sur cet appareil'); renderSettings(); });
+  $('#test')?.addEventListener('click', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(r.sent ? 'Notification de test envoyée' : "Aucun appareil n'a reçu le test"); });
+
+  const ha = await api('/api/ha/status');
+  updateSideHA(ha);
+  const el = $('#ha-settings');
+  if (el) el.innerHTML = `<div class="section-title"><h2>Home Assistant</h2><a href="#/capteurs">Capteurs</a></div>
+    <div class="ha-card ${!ha.configured ? 'none' : ha.ok ? 'ok' : 'ko'}"><div class="ha-ico">${icon(!ha.configured ? 'sensor' : ha.ok ? 'check-circle' : 'alert')}</div>
+    <div><b>${!ha.configured ? 'Non configuré' : ha.ok ? 'Connecté' : 'Injoignable'}</b><span>${!ha.configured ? 'Renseignez HA_URL et HA_TOKEN dans le fichier .env.' : ha.ok ? `Version ${esc(ha.version)}` : esc(ha.error)}</span></div></div>`;
+}
+
+// ---------- Push ----------
+let swReg;
+async function currentSubscription() { swReg = swReg || (await navigator.serviceWorker.ready); return swReg.pushManager.getSubscription(); }
+function urlB64ToUint8(b64) {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+async function subscribe() {
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Notifications refusées');
+  swReg = swReg || (await navigator.serviceWorker.ready);
+  const { publicKey } = await api('/api/push/key');
+  let sub = await swReg.pushManager.getSubscription();
+  if (!sub) sub = await swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(publicKey) });
+  await api('/api/push/subscribe', { method: 'POST', json: { subscription: sub.toJSON(), label: navigator.userAgent.slice(0, 80) } });
+}
+async function unsubscribe() {
+  const sub = await currentSubscription();
+  if (!sub) return;
+  await api('/api/push/unsubscribe', { method: 'POST', json: { endpoint: sub.endpoint } });
+  await sub.unsubscribe();
+}
+
+// ================= FEUILLES =================
+function openSheet(html, onReady) {
+  sheet.innerHTML = html;
+  if (!sheet.open) sheet.showModal();
+  sheet.onclick = (e) => { if (e.target === sheet) sheet.close(); };
+  $$('[data-close]', sheet).forEach((b) => (b.onclick = () => sheet.close()));
+  onReady?.(sheet);
+}
+
+let haEntities = null;
+async function openPlantForm(p = null, { focusSensors = false } = {}) {
+  const editing = !!p;
+  const rooms = [...new Set(state.plants.map((x) => x.room).filter(Boolean))];
+  const interval = p?.interval_days || 7;
+  const presets = [3, 7, 10, 14, 21];
+  const haOn = state.settings?.ha_configured;
+  if (haOn && !haEntities) { try { haEntities = await api('/api/ha/entities'); } catch { haEntities = []; } }
+  const map = p?.sensor_map || {};
+  const tg = p?.targets || {};
+  const sensorSelect = (m) => {
+    const opts = (haEntities || []).filter((e) => e.kind === m || e.entity_id === map[m]);
+    return `<label class="sensor-pick"><span class="s-ico" style="color:${{ moisture: 'var(--teal)', temperature: 'var(--red)', illuminance: 'var(--orange)', humidity: 'var(--green-2)' }[m]}">${icon(METRIC[m].icon)}</span>
+      <select class="input" name="sensor_${m}" aria-label="${esc(METRIC[m].long)}">
+        <option value="">${esc(METRIC[m].long)} : aucun</option>
+        ${opts.map((e) => `<option value="${esc(e.entity_id)}" ${map[m] === e.entity_id ? 'selected' : ''}>${esc(e.name)} (${esc(e.state)}${e.unit ? ' ' + esc(e.unit) : ''})</option>`).join('')}
+      </select></label>`;
+  };
+
+  openSheet(`
+    <form method="dialog" id="plant-form" novalidate>
+      <div class="sheet-head">
+        <h2 id="sheet-title">${editing ? 'Modifier la plante' : 'Ajouter une plante'}</h2>
+        <button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button>
+      </div>
+      <div class="progress" aria-hidden="true"><i id="prog"></i></div>
+      <div class="sheet-body" id="form-body">
+        <div class="form-section">
+          <h3>${icon('camera')}Nom et photo</h3>
+          <label class="photo-pick ${p?.photo_url ? 'has-photo' : ''}" id="pick" style="margin-top:12px">
+            ${p?.photo_url ? `<img src="${esc(p.photo_url)}" alt="">` : ''}
+            <span class="pick-label">${icon('camera')}<span>${p?.photo_url ? 'Changer la photo' : 'Prendre ou choisir une photo'}</span></span>
+            <input type="file" name="photo" accept="image/*" aria-label="Photo de la plante">
+          </label>
+          ${p?.photo_url ? `<button type="button" class="remove-photo" id="rm-photo">Retirer la photo</button>` : ''}
+          <input type="hidden" name="remove_photo" value="0">
+          <div class="two">
+            <label class="field"><span>Nom</span><input class="input" name="name" required maxlength="80" placeholder="Monstera du salon" value="${esc(p?.name || '')}"></label>
+            <label class="field"><span>Espèce</span><input class="input" name="species" maxlength="120" placeholder="Monstera deliciosa" value="${esc(p?.species || '')}"></label>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h3>${icon('pin')}Emplacement</h3>
+          <label class="field"><span>Pièce</span><input class="input" name="room" maxlength="60" list="rooms" placeholder="Salon" value="${esc(p?.room || '')}"></label>
+          <datalist id="rooms">${rooms.map((r) => `<option value="${esc(r)}">`).join('')}</datalist>
+          <fieldset class="field"><legend>Lumière reçue</legend>
+            <div class="seg">${LIGHTS.map((l) => `<label><input type="radio" name="light" value="${l.v}" ${p?.light === l.v ? 'checked' : ''}><span><i>${Array.from({ length: l.suns }, () => icon('sun')).join('')}</i>${l.label}</span></label>`).join('')}</div>
+          </fieldset>
+        </div>
+
+        <div class="form-section">
+          <h3>${icon('drop')}Arrosage</h3>
+          <div class="field"><span id="interval-label">Arroser tous les</span>
+            <div class="stepper" role="group" aria-labelledby="interval-label">
+              <button type="button" data-step="-1" aria-label="Un jour de moins">−</button>
+              <output id="interval-out" aria-live="polite"><b>${interval}</b><span>${interval > 1 ? 'jours' : 'jour'}</span></output>
+              <button type="button" data-step="1" aria-label="Un jour de plus">+</button>
+            </div>
+            <input type="hidden" name="interval_days" value="${interval}">
+            <div class="presets">${presets.map((n) => `<button type="button" data-preset="${n}" aria-pressed="${n === interval}">${n} j</button>`).join('')}</div>
+          </div>
+          ${editing ? '' : `<div class="field" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+            <div><b style="font-size:14px">Arrosée aujourd'hui</b><div class="muted" style="font-size:12.5px">Le compte à rebours démarre maintenant</div></div>
+            <label class="switch"><input type="checkbox" name="watered_today" value="1" aria-label="Arrosée aujourd'hui"><span></span></label></div>`}
+        </div>
+
+        <div class="form-section" id="sensors-section">
+          <h3>${icon('sensor')}Capteurs <span class="muted" style="font-weight:600;font-size:13px">(facultatif)</span></h3>
+          ${!haOn ? `<p>Connectez Home Assistant (variables <code>HA_URL</code> et <code>HA_TOKEN</code>) pour associer des capteurs.</p>`
+            : !haEntities?.length ? `<p>Aucune entité de capteur trouvée dans Home Assistant.</p>`
+            : `<p>Choisissez les entités Home Assistant de cette plante.</p>
+              ${Object.keys(METRIC).map(sensorSelect).join('')}
+              <div id="targets" style="margin-top:6px">
+                <div class="two">
+                  <label class="field"><span>Humidité sol min (%)</span><input class="input" name="moisture_min" type="number" min="0" max="100" inputmode="numeric" placeholder="20" value="${tg.moisture_min ?? ''}"></label>
+                  <label class="field"><span>Humidité sol max (%)</span><input class="input" name="moisture_max" type="number" min="0" max="100" inputmode="numeric" placeholder="60" value="${tg.moisture_max ?? ''}"></label>
+                  <label class="field"><span>Température min (°C)</span><input class="input" name="temp_min" type="number" min="-10" max="50" step="0.5" inputmode="decimal" placeholder="15" value="${tg.temp_min ?? ''}"></label>
+                  <label class="field"><span>Température max (°C)</span><input class="input" name="temp_max" type="number" min="-10" max="50" step="0.5" inputmode="decimal" placeholder="28" value="${tg.temp_max ?? ''}"></label>
+                </div>
+                <small class="muted" style="display:block;margin-top:6px;font-size:12.5px">Champs vides : valeurs par défaut. Le seuil de lumière dépend du niveau choisi plus haut.</small>
+              </div>`}
+        </div>
+
+        <div class="form-section">
+          <h3>${icon('edit')}Notes</h3>
+          <label class="field" style="margin-top:8px"><span class="visually-hidden">Notes</span><textarea class="input" name="notes" maxlength="4000" placeholder="Engrais, rempotage, particularités…">${esc(p?.notes || '')}</textarea></label>
+        </div>
+      </div>
+      <div class="sheet-foot"><button class="btn block" type="submit" id="save">${editing ? 'Enregistrer' : 'Ajouter la plante'}</button></div>
+    </form>`, (root) => {
+    const form = $('#plant-form', root);
+    const hidden = form.elements.interval_days;
+    const setIv = (n) => {
+      n = Math.max(1, Math.min(120, n));
+      hidden.value = n;
+      $('#interval-out', root).innerHTML = `<b>${n}</b><span>${n > 1 ? 'jours' : 'jour'}</span>`;
+      $$('[data-preset]', root).forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.preset) === n)));
+    };
+    $$('[data-step]', root).forEach((b) => (b.onclick = () => setIv(Number(hidden.value) + Number(b.dataset.step))));
+    $$('[data-preset]', root).forEach((b) => (b.onclick = () => setIv(Number(b.dataset.preset))));
+
+    // Barre de progression : complétude de la fiche
+    const progress = () => {
+      const f = form.elements;
+      const parts = [!!(f.photo.files.length || $('#pick img', root)), !!f.name.value.trim(), !!f.species.value.trim(), !!f.room.value.trim(), !!form.querySelector('[name=light]:checked')];
+      $('#prog', root).style.width = `${(parts.filter(Boolean).length / parts.length) * 100}%`;
+    };
+    form.addEventListener('input', progress);
+    form.addEventListener('change', progress);
+    progress();
+
+    const fileInput = form.elements.photo;
+    fileInput.onchange = () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      const pick = $('#pick', root);
+      pick.classList.add('has-photo');
+      pick.querySelector('img')?.remove();
+      const img = new Image(); img.alt = ''; img.src = URL.createObjectURL(f);
+      pick.prepend(img);
+      pick.querySelector('.pick-label span').textContent = 'Changer la photo';
+      form.elements.remove_photo.value = '0';
+    };
+    $('#rm-photo', root)?.addEventListener('click', (e) => {
+      form.elements.remove_photo.value = '1';
+      fileInput.value = '';
+      const pick = $('#pick', root);
+      pick.classList.remove('has-photo');
+      pick.querySelector('img')?.remove();
+      pick.querySelector('.pick-label span').textContent = 'Prendre ou choisir une photo';
+      e.currentTarget.remove();
+      progress();
+    });
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (!form.elements.name.value.trim()) { form.elements.name.focus(); toast('Donnez un nom à la plante'); return; }
+      const btn = $('#save', root);
+      btn.disabled = true; btn.textContent = 'Enregistrement…';
+      try {
+        const fd = new FormData(form);
+        if (!fileInput.files.length) fd.delete('photo');
+        const saved = await api(editing ? `/api/plants/${p.id}` : '/api/plants', { method: editing ? 'PUT' : 'POST', body: fd });
+        await loadPlants();
+        sheet.close();
+        toast(editing ? 'Modifications enregistrées' : `${saved.name} ajoutée`);
+        if (editing) renderDetail(p.id); else location.hash = `#/plante/${saved.id}`;
+      } catch (err) {
+        toast(err.message);
+        btn.disabled = false; btn.textContent = editing ? 'Enregistrer' : 'Ajouter la plante';
+      }
+    };
+    if (focusSensors) setTimeout(() => $('#sensors-section', root)?.scrollIntoView({ block: 'start' }), 60);
+    else if (!editing) setTimeout(() => form.elements.name.focus(), 60);
+  });
+}
+
+function openWaterDate(p) {
+  const iso = (d) => dayKey(d);
+  openSheet(`<form method="dialog" id="date-form">
+    <div class="sheet-head"><h2 id="sheet-title">Arrosée un autre jour</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="sheet-body">
+      <label class="field" style="margin-top:0"><span>Date de l'arrosage de ${esc(p.name)}</span>
+        <input class="input" type="date" name="d" value="${iso(addDays(new Date(), -1))}" max="${iso(new Date())}" required></label>
+      <small class="muted" style="font-size:12.5px">Pratique si vous avez oublié de le noter.</small>
+    </div>
+    <div class="sheet-foot"><button class="btn block" type="submit">${icon('drop')}Enregistrer l'arrosage</button></div>
+  </form>`, (root) => {
+    $('#date-form', root).onsubmit = async (e) => {
+      e.preventDefault();
+      const v = e.target.elements.d.value;
+      if (!v) return;
+      const at = new Date(`${v}T12:00:00`);
+      if (at > new Date()) at.setTime(Date.now());
+      await water(p, { at: at.toISOString(), quiet: true });
+      sheet.close();
+      toast(`Arrosage du ${fmtDM.format(at)} enregistré`);
+      render();
+    };
+  });
+}
+
+function confirmDelete(p) {
+  openSheet(`<div class="sheet-inner">
+    <div class="sheet-head"><h2 id="sheet-title">Supprimer ${esc(p.name)} ?</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="sheet-body"><p class="muted" style="margin:0">La fiche, la photo et l'historique d'arrosage seront définitivement effacés. Les capteurs restent dans Home Assistant.</p></div>
+    <div class="sheet-foot" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn secondary" type="button" data-close>Garder</button>
+      <button class="btn solid-danger" type="button" id="confirm-del">Supprimer</button>
+    </div></div>`, (root) => {
+    $$('[data-close]', root).forEach((b) => (b.onclick = () => sheet.close()));
+    $('#confirm-del', root).onclick = async () => {
+      await api(`/api/plants/${p.id}`, { method: 'DELETE' });
+      await loadPlants();
+      sheet.close();
+      toast(`${p.name} supprimée`);
+      plantQuery = ''; plantFilter = 'all';
+      location.hash = '#/plantes';
+    };
+  });
+}
+
+// ================= ROUTEUR =================
+function bindAdd() { $$('[data-add]').forEach((b) => (b.onclick = () => openPlantForm())); }
+function currentRoute() {
+  const h = location.hash || '#/';
+  if (/^#\/plante\/\d+/.test(h)) return 'detail';
+  if (h.startsWith('#/plantes')) return 'plants';
+  if (h.startsWith('#/calendrier')) return 'calendar';
+  if (h.startsWith('#/capteurs')) return 'sensors';
+  if (h.startsWith('#/parametres')) return 'settings';
+  return 'home';
+}
+async function render() {
+  view.classList.remove('flush-top');
+  const h = location.hash || '#/';
+  const params = new URLSearchParams(h.split('?')[1] || '');
+  const r = currentRoute();
+  if (r === 'detail') await renderDetail(h.match(/^#\/plante\/(\d+)/)[1]);
+  else if (r === 'plants') renderPlants(params);
+  else if (r === 'calendar') await renderCalendar();
+  else if (r === 'sensors') await renderSensors();
+  else if (r === 'settings') await renderSettings();
+  else await renderHome();
+  bindAdd();
+}
+
+window.addEventListener('hashchange', async () => {
+  if (sheet.open) sheet.close();
+  await render();
+  window.scrollTo(0, 0);
+});
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && !sheet.open) { await loadPlants(); render(); }
+});
+$('#global-q').addEventListener('input', (e) => {
+  plantQuery = e.target.value;
+  if (currentRoute() !== 'plants') location.hash = '#/plantes';
+  else window.__drawPlants?.();
+});
+
+(async function init() {
+  view.innerHTML = `<div class="skeleton">Chargement…</div>`;
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').then((r) => (swReg = r)).catch(() => {});
+  try {
+    await Promise.all([loadPlants(), loadSettings()]);
+    await render();
+    api('/api/ha/status').then(updateSideHA).catch(() => {});
+  } catch {
+    view.innerHTML = `<div class="card empty"><h2>Serveur injoignable</h2><p>Vérifiez que vous êtes sur le réseau de la maison ou connecté au VPN, puis réessayez.</p><button class="btn" type="button" onclick="location.reload()">Réessayer</button></div>`;
+  }
+})();

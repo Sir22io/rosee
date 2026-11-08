@@ -1,0 +1,13 @@
+services:
+  rosee:
+    # Image publiée par GitHub Actions (docker compose pull) ;
+    # sans accès au registre, "docker compose up -d --build" construit depuis les sources.
+    image: ghcr.io/sir22io/rosee:latest
+    build: .
+    container_name: rosee
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - ./data:/data
