@@ -179,6 +179,157 @@ async function water(p, { at, quiet, after } = {}) {
   return r;
 }
 
+// ================= AUTRES SOINS =================
+const CARE_UI = {
+  engrais: { icon: 'sprout', task: (n) => `Engrais pour ${n}`, done: 'Engrais donné', btn: 'Engrais donné' },
+  rempotage: { icon: 'pot', task: (n) => `Vérifier le pot de ${n}`, done: 'Rempotée', btn: 'Vérifier' },
+  taille: { icon: 'scissors', task: (n) => `Tailler ${n}`, done: 'Taillée', btn: 'Taillée' },
+  rotation: { icon: 'rotate', task: (n) => `Tourner le pot de ${n}`, done: 'Pot tourné', btn: 'Tourné' },
+};
+const CARE_INTRO = {
+  engrais: 'Pendant la saison de croissance seulement.',
+  rempotage: 'Optionnel. Beaucoup de plantes restent des années dans le même pot : Rosée vous propose juste de vérifier au printemps.',
+  taille: 'Optionnel. Une fois par an au printemps, pour retirer le jauni et garder une forme compacte.',
+  rotation: 'Optionnel. Un quart de tour pour que la plante ne penche pas vers la fenêtre.',
+};
+const REPOT_SIGNS = [
+  'Des racines sortent par les trous du pot ou tournent en rond à la surface',
+  'L’eau traverse le pot tout de suite, sans être retenue',
+  'La motte se décolle des bords du pot',
+  'La plante ne fait plus de nouvelles feuilles au printemps',
+];
+const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+const keyToDate = (k) => new Date(`${k}T00:00:00`);
+const fmtDay = (d) => `${d.getDate() === 1 ? '1er' : d.getDate()} ${MONTHS[d.getMonth()]}`;
+function seasonText(t) {
+  if (!t.months) return 'toute l’année';
+  return `de ${MONTHS[t.months[0]]} à ${MONTHS[t.months[t.months.length - 1]]}`;
+}
+function rhythmText(t) {
+  if (t.type === 'rempotage') { const y = Math.round(t.every / 365); return `Vérification ${y > 1 ? `tous les ${y} ans` : 'chaque année'}, ${seasonText(t)}`; }
+  if (t.type === 'taille' && t.every >= 360) return `Une fois par an, ${seasonText(t)}`;
+  return `Tous les ${t.every} jours, ${seasonText(t)}`;
+}
+function careWhen(t) {
+  if (!t.on) return 'Désactivé';
+  if (t.days_left < 0) return `En retard de ${t.days_left === -1 ? '1 jour' : `${-t.days_left} jours`}`;
+  if (t.days_left === 0) return 'Aujourd’hui';
+  const d = keyToDate(t.next);
+  if (!t.in_season) return `Reprise le ${fmtDay(d)}`;
+  if (t.days_left === 1) return 'Demain';
+  return t.days_left <= 14 ? `Dans ${t.days_left} jours` : `Le ${fmtDay(d)}`;
+}
+const dueCares = () => state.plants.flatMap((p) => (p.care_tasks || []).filter((t) => t.on && t.days_left <= 0).map((t) => ({ p, t })));
+
+async function doCare(p, type, action = 'done') {
+  const r = await api(`/api/plants/${p.id}/care/${type}`, { method: 'POST', json: { action } });
+  await loadPlants();
+  toast(action === 'skip' ? 'Pas besoin : prochaine vérification dans un an' : `${CARE_UI[type].done} · ${p.name}`, {
+    label: 'Annuler',
+    run: async () => {
+      await api(`/api/care-log/${r.care_id}`, { method: 'DELETE' });
+      await loadPlants();
+      toast('Soin annulé');
+      render();
+    },
+  });
+  return r;
+}
+async function setCare(p, type, patch) {
+  const r = await api(`/api/plants/${p.id}/cares`, { method: 'PUT', json: { [type]: patch } });
+  await loadPlants();
+  return r.care_tasks;
+}
+
+// Rempotage : pas une corvée, une vérification. Deux issues : rempotée, ou pas besoin cette année.
+function openRepotCheck(p, after) {
+  openSheet(`<div class="sheet-inner">
+    <div class="sheet-head"><h2 id="sheet-title">Faut-il rempoter ${esc(p.name)} ?</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="sheet-body">
+      <p class="muted" style="margin:0 0 12px">Un seul de ces signes suffit pour rempoter. Sinon, la plante est bien dans son pot.</p>
+      <ul class="care-tips">${REPOT_SIGNS.map((x) => `<li>${icon('search')}<span>${esc(x)}</span></li>`).join('')}</ul>
+      <div class="repot-note">
+        <p><b>Aucun signe</b> : pas besoin de rempoter. Remplacer les 2–3 cm de terre du dessus par du terreau neuf suffit.</p>
+        <p><b>Si vous rempotez</b> : un pot 2 à 4 cm plus large, percé, au printemps, puis un arrosage copieux. Pas d’engrais pendant un mois.</p>
+      </div>
+    </div>
+    <div class="sheet-foot" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn secondary" type="button" data-a="skip">Pas cette année</button>
+      <button class="btn" type="button" data-a="done">${icon('pot')}Rempotée</button>
+    </div></div>`, (root) => {
+    $$('[data-a]', root).forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      try { await doCare(p, 'rempotage', b.dataset.a); sheet.close(); after?.(); }
+      catch (e) { toast(e.message); b.disabled = false; }
+    }));
+  });
+}
+function careTaskRow({ p, t }) {
+  const ui = CARE_UI[t.type];
+  const late = t.days_left < 0;
+  return `<li class="task" data-id="${p.id}" data-care="${t.type}">
+    ${thumb(p)}
+    <a class="t-body" href="#/plante/${p.id}"><div class="t-title">${esc(ui.task(p.name))}</div>
+      <div class="t-sub"><span class="care-tag">${icon(ui.icon)}${esc(t.label)}</span>${p.room ? ` · ${esc(p.room)}` : ''}${late ? ` · <span class="late">${esc(careWhen(t).toLowerCase())}</span>` : ''}</div></a>
+    <button class="check" type="button" aria-label="${esc(t.type === 'rempotage' ? `Vérifier le pot de ${p.name}` : `Marquer comme fait : ${ui.task(p.name)}`)}">${icon('check')}</button>
+  </li>`;
+}
+async function checkCareTask(btn, refresh) {
+  const li = btn.closest('.task');
+  const p = plantById(li.dataset.id);
+  const type = li.dataset.care;
+  if (type === 'rempotage') return openRepotCheck(p, refresh);
+  btn.classList.add('on'); btn.disabled = true; li.classList.add('is-done');
+  try { await doCare(p, type); setTimeout(refresh, 900); }
+  catch (e) { btn.classList.remove('on'); btn.disabled = false; li.classList.remove('is-done'); toast(e.message); }
+}
+
+// Carte « Soins » de la fiche : interrupteur par soin, prochaine date, bouton « Fait »
+function caresCard(p) {
+  const list = p.care_tasks || [];
+  if (!list.length) return '';
+  return `<section class="card" id="cares">
+    <div class="section-title"><h2>Autres soins</h2><button class="link-btn" type="button" id="cares-edit">Rythmes</button></div>
+    <ul class="cares">${list.map((t) => {
+      const ui = CARE_UI[t.type];
+      const late = t.on && t.days_left < 0;
+      const due = t.on && t.days_left <= 0;
+      return `<li class="care-row ${t.on ? '' : 'off'}" data-care="${t.type}">
+        <span class="care-ico c-${t.type}">${icon(ui.icon)}</span>
+        <div class="care-main">
+          <div class="care-top"><b>${esc(t.label)}</b>${t.on ? `<span class="care-when ${late ? 'late' : due ? 'due' : ''}">${esc(careWhen(t))}</span>` : ''}</div>
+          <p>${esc(t.on ? rhythmText(t) : CARE_INTRO[t.type])}</p>
+          ${t.on && t.last_at ? `<p class="care-last">${t.last_note === 'skip' ? 'Vérifié, pas besoin' : 'Dernière fois'} ${esc(relPast(new Date(t.last_at)))}</p>` : ''}
+          ${t.on ? `<details class="care-help"><summary>Comment faire</summary><p>${esc(t.help)}</p></details>` : ''}
+          ${due ? `<button class="btn sm ${t.type === 'rempotage' ? 'secondary' : ''}" type="button" data-care-do="${t.type}">${icon(t.type === 'rempotage' ? 'pot' : 'check')}${esc(ui.btn)}</button>` : ''}
+        </div>
+        <label class="switch"><input type="checkbox" data-care-on="${t.type}" ${t.on ? 'checked' : ''} aria-label="${esc(t.label)}"><span></span></label>
+      </li>`;
+    }).join('')}</ul>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Les soins activés apparaissent dans les tâches du jour, le calendrier et votre agenda.</p>
+  </section>`;
+}
+function bindCaresCard(p, rerender) {
+  const root = $('#cares');
+  if (!root) return;
+  $$('[data-care-on]', root).forEach((i) => (i.onchange = async () => {
+    i.disabled = true;
+    try {
+      const tasks = await setCare(p, i.dataset.careOn, { on: i.checked });
+      const t = tasks.find((x) => x.type === i.dataset.careOn);
+      toast(i.checked ? `${t.label} : prochaine fois ${careWhen(t).toLowerCase()}` : `${t.label} : plus de rappel`);
+      rerender();
+    } catch (e) { i.checked = !i.checked; i.disabled = false; toast(e.message); }
+  }));
+  $$('[data-care-do]', root).forEach((b) => (b.onclick = async () => {
+    const type = b.dataset.careDo;
+    if (type === 'rempotage') return openRepotCheck(p, rerender);
+    b.disabled = true;
+    try { await doCare(p, type); rerender(); } catch (e) { toast(e.message); b.disabled = false; }
+  }));
+  $('#cares-edit', root).onclick = () => openPlantForm(plantById(p.id) || p, { focusCares: true });
+}
+
 function setTab(name) {
   $$('[data-tab]').forEach((a) => (a.dataset.tab === name ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
 }
@@ -203,6 +354,7 @@ async function renderHome() {
   setTab('home');
   const P = state.plants;
   const due = P.filter((p) => p.days_left <= 0).sort((a, b) => a.days_left - b.days_left);
+  const cares = dueCares().sort((a, b) => a.t.days_left - b.t.days_left);
   const alerts = P.filter((p) => p.alerts.length);
   const attention = P.filter(needsCare);
   const healthy = P.filter((p) => p.health === 'ok').length;
@@ -228,8 +380,9 @@ async function renderHome() {
       <div class="col">
         <section class="card o1">
           <div class="section-title"><h2>Tâches du jour</h2><a href="#/calendrier">Calendrier</a></div>
-          ${due.length ? `<ul class="tasks" id="tasks">${due.map(taskRow).join('')}</ul>`
-            : `<div class="empty-line">${icon('check-circle')}<span>Aucun arrosage prévu aujourd'hui.${nextUp()}</span></div>`}
+          ${due.length || cares.length ? `<ul class="tasks" id="tasks">${due.map(taskRow).join('')}${cares.map(careTaskRow).join('')}</ul>`
+            : `<div class="empty-line">${icon('check-circle')}<span>Aucun soin prévu aujourd'hui.${nextUp()}</span></div>`}
+          ${(due.length || cares.length) && !due.length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Pas d'arrosage aujourd'hui.${nextUp()}</p>` : ''}
         </section>
         <section class="card o4" id="activity"><div class="section-title"><h2>Activité récente</h2></div><div class="muted">Chargement…</div></section>
       </div>
@@ -247,7 +400,7 @@ async function renderHome() {
   `;
   bindAdd();
   if (!P.length) return;
-  $$('#tasks .check').forEach((b) => (b.onclick = () => checkTask(b)));
+  $$('#tasks .check').forEach((b) => (b.onclick = () => (b.closest('[data-care]') ? checkCareTask(b, () => { if (currentRoute() === 'home') render(); }) : checkTask(b))));
   renderConditions();
   renderUpcoming();
   try {
@@ -323,11 +476,14 @@ function renderConditions() {
 function renderUpcoming() {
   const el = $('#upcoming');
   if (!el) return;
-  const next = state.plants.filter((p) => p.days_left > 0 && p.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
+  const next = [
+    ...state.plants.filter((p) => p.days_left > 0 && p.days_left <= 7).map((p) => ({ p, d: p.days_left, title: `Arroser ${p.name}` })),
+    ...state.plants.flatMap((p) => (p.care_tasks || []).filter((t) => t.on && t.days_left > 0 && t.days_left <= 7).map((t) => ({ p, d: t.days_left, title: CARE_UI[t.type].task(p.name), care: t }))),
+  ].sort((a, b) => a.d - b.d);
   el.innerHTML = `<div class="section-title"><h2>Cette semaine</h2><a href="#/calendrier">Calendrier</a></div>
-    ${next.length ? `<ul class="tasks">${next.map((p) => `<li class="task">
+    ${next.length ? `<ul class="tasks">${next.map(({ p, d, title, care }) => `<li class="task">
       ${thumb(p)}
-      <a class="t-body" href="#/plante/${p.id}"><div class="t-title">Arroser ${esc(p.name)}</div><div class="t-sub">${esc(cap(fmtLong.format(addDays(new Date(), p.days_left))))}</div></a><span></span></li>`).join('')}</ul>`
+      <a class="t-body" href="#/plante/${p.id}"><div class="t-title">${esc(title)}</div><div class="t-sub">${care ? `<span class="care-tag">${icon(CARE_UI[care.type].icon)}${esc(care.label)}</span> · ` : ''}${esc(cap(fmtLong.format(addDays(new Date(), d))))}</div></a><span></span></li>`).join('')}</ul>`
       : `<div class="muted">Rien de prévu dans les 7 prochains jours.</div>`}`;
 }
 
@@ -483,10 +639,27 @@ function drawTab(p, metrics) {
           <button type="button" data-del="${w.id}" aria-label="Supprimer cet arrosage">${icon('close')}</button></li>`;
       }).join('')}</ul>` : `<div class="muted">Aucun arrosage enregistré pour le moment.</div>`}
     </section>`;
+    const ch = p.care_history || [];
+    if (ch.length) body.insertAdjacentHTML('beforeend', `<section class="card">
+      <div class="section-title"><h2>Autres soins <span class="soft">(${ch.length})</span></h2></div>
+      <ul class="timeline care-line">${ch.map((c) => {
+        const d = new Date(c.at);
+        const ui = CARE_UI[c.type];
+        const label = c.type === 'rempotage' && c.note === 'skip' ? 'Pot vérifié, pas besoin' : ui?.done || c.type;
+        return `<li><span class="dot c-${esc(c.type)}"></span>
+          <span class="when"><b>${esc(label)}</b><span>${esc(cap(fmtLong.format(d)))} ${d.getFullYear() !== new Date().getFullYear() ? d.getFullYear() : ''}</span></span>
+          <button type="button" data-del-care="${c.id}" aria-label="Supprimer ce soin">${icon('close')}</button></li>`;
+      }).join('')}</ul></section>`);
     $$('[data-del]', body).forEach((b) => (b.onclick = async () => {
       await api(`/api/waterings/${b.dataset.del}`, { method: 'DELETE' });
       await loadPlants();
       toast('Arrosage supprimé');
+      renderDetail(p.id);
+    }));
+    $$('[data-del-care]', body).forEach((b) => (b.onclick = async () => {
+      await api(`/api/care-log/${b.dataset.delCare}`, { method: 'DELETE' });
+      await loadPlants();
+      toast('Soin supprimé');
       renderDetail(p.id);
     }));
     return;
@@ -529,10 +702,12 @@ function drawTab(p, metrics) {
       </div>
     </section>
 
+    ${caresCard(p)}
     ${careCard(p)}
     ${p.notes ? `<section class="card"><div class="section-title"><h2>Notes</h2></div><p class="notes">${esc(p.notes)}</p></section>` : ''}
   `;
   $('#connect')?.addEventListener('click', () => openPlantForm(p, { focusSensors: true }));
+  bindCaresCard(p, () => renderDetail(p.id));
   $$('[data-h]', body).forEach((b) => (b.onclick = () => { chartHours = Number(b.dataset.h); $$('[data-h]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); loadChart(p); }));
   $$('[data-m]', body).forEach((b) => (b.onclick = () => { chartMetric = b.dataset.m; $$('[data-m]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); loadChart(p); }));
   if (metrics.length) loadChart(p);
@@ -746,7 +921,7 @@ async function renderCalendar() {
 
   view.innerHTML = `
     <div class="page-head">
-      <div><h1>Calendrier</h1><p>Arrosages réalisés et prévus</p></div>
+      <div><h1>Calendrier</h1><p>Arrosages et soins, réalisés et prévus</p></div>
       <div class="head-actions"><button class="btn secondary sm green" type="button" id="feed">${icon('link')}<span>Google Agenda</span></button></div>
     </div>
     <div class="cal-layout">
@@ -760,7 +935,7 @@ async function renderCalendar() {
           </div>
         </div>
         <div class="cal-grid" id="cal"><div class="skeleton" style="grid-column:1/-1;padding:40px 0">Chargement…</div></div>
-        <div class="legend"><span><i style="background:var(--ink-3)"></i>Fait</span><span><i style="background:var(--teal)"></i>Prévu</span><span><i style="background:var(--orange)"></i>En retard</span></div>
+        <div class="legend"><span><i style="background:var(--ink-3)"></i>Fait</span><span><i style="background:var(--teal)"></i>Prévu</span><span><i style="background:var(--orange)"></i>En retard</span><span><i style="background:var(--green)"></i>Autre soin</span></div>
       </section>
       <section class="card cal-side" id="day-panel"></section>
     </div>`;
@@ -775,6 +950,18 @@ async function renderCalendar() {
   let done = [];
   try { done = await api(`/api/waterings?from=${gridStart.toISOString()}&to=${addDays(gridEnd, 1).toISOString()}`); } catch {}
   for (const w of done) { const d = new Date(w.at); push(dayKey(d), { type: 'done', plant_id: w.plant_id, name: w.plant_name, room: w.room, at: d, id: w.id }); }
+  let careDone = [];
+  try { careDone = await api(`/api/care-log?from=${gridStart.toISOString()}&to=${addDays(gridEnd, 1).toISOString()}`); } catch {}
+  for (const c of careDone) {
+    const d = new Date(c.at);
+    push(dayKey(d), { type: 'done', care: c.type, skip: c.note === 'skip', plant_id: c.plant_id, name: c.plant_name, room: c.room, at: d, id: c.id });
+  }
+  for (const p of state.plants) {
+    for (const t of p.care_tasks || []) {
+      if (!t.on) continue;
+      t.dates.forEach((k, i) => push(k, { type: i === 0 && t.days_left < 0 ? 'late' : 'planned', care: t.type, task: t, plant_id: p.id, name: p.name, room: p.room, plant: p }));
+    }
+  }
   for (const p of state.plants) {
     let first = true;
     for (let d = addDays(today, Math.max(0, p.days_left)); d <= gridEnd; d = addDays(d, p.month_intervals?.[d.getMonth()] || p.interval_days)) {
@@ -783,7 +970,7 @@ async function renderCalendar() {
     }
   }
   const order = { late: 0, planned: 1, done: 2 };
-  for (const list of events.values()) list.sort((a, b) => order[a.type] - order[b.type] || a.name.localeCompare(b.name));
+  for (const list of events.values()) list.sort((a, b) => order[a.type] - order[b.type] || !!a.care - !!b.care || a.name.localeCompare(b.name));
 
   const dows = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
   let html = dows.map((d) => `<div class="dow">${d}</div>`).join('');
@@ -794,8 +981,8 @@ async function renderCalendar() {
     const cls = [d.getMonth() !== first.getMonth() ? 'out' : '', key === dayKey(today) ? 'today' : ''].join(' ');
     html += `<button type="button" class="day ${cls}" data-key="${key}" aria-pressed="${key === dayKey(calSelected)}" aria-label="${esc(fmtLong.format(d))}, ${plural(ev.length, 'soin', 'soins')}">
       <span class="n">${d.getDate()}</span>
-      <span class="dots">${ev.slice(0, 3).map((e) => `<i class="${e.type}"></i>`).join('')}</span>
-      <span class="pills">${ev.slice(0, 3).map((e) => `<span class="${e.type}">${esc(e.name)}</span>`).join('')}${ev.length > 3 ? `<em>+${ev.length - 3}</em>` : ''}</span>
+      <span class="dots">${ev.slice(0, 3).map((e) => `<i class="${e.type}${e.care && e.type === 'planned' ? ' care' : ''}"></i>`).join('')}</span>
+      <span class="pills">${ev.slice(0, 3).map((e) => `<span class="${e.type}${e.care && e.type === 'planned' ? ' care' : ''}">${e.care ? icon(CARE_UI[e.care].icon) : ''}${esc(e.name)}</span>`).join('')}${ev.length > 3 ? `<em>+${ev.length - 3}</em>` : ''}</span>
     </button>`;
   }
   $('#cal').innerHTML = html;
@@ -818,7 +1005,10 @@ function nextDays(events, fromKey) {
   if (!out.length) return '';
   return `<div class="next-days"><h3>Les 7 jours suivants</h3>
     <ul>${out.map(({ d, list }) => `<li><span class="nd-day">${esc(cap(fmtShort.format(d).replace('.', '')))}</span>
-      <span class="nd-plants">${list.map((e) => `<a href="#/plante/${e.plant_id}" title="${esc(e.name)}">${thumb(plantById(e.plant_id), 'sm')}<span>${esc(e.name)}</span></a>`).join('')}</span></li>`).join('')}</ul></div>`;
+      <span class="nd-plants">${[...new Map(list.map((e) => [e.plant_id, e])).values()].map((e) => {
+        const what = list.filter((x) => x.plant_id === e.plant_id).map((x) => (x.care ? CARE_UI[x.care].task(x.name) : `Arroser ${x.name}`)).join(', ');
+        return `<a href="#/plante/${e.plant_id}" title="${esc(what)}">${thumb(plantById(e.plant_id), 'sm')}<span>${esc(e.name)}</span></a>`;
+      }).join('')}</span></li>`).join('')}</ul></div>`;
 }
 
 function drawDay(events) {
@@ -829,15 +1019,19 @@ function drawDay(events) {
   el.innerHTML = `<div class="section-title"><h2>${esc(cap(fmtLong.format(calSelected)))}</h2></div>
     ${list.length ? `<ul class="tasks">${list.map((e) => {
       const canCheck = e.type !== 'done' && key === today;
-      const sub = e.type === 'done' ? `Fait à ${fmtTime.format(e.at)}` : e.type === 'late' ? `<span class="late">${esc(nextText(e.plant))}</span>` : key < today ? 'Non réalisé' : 'Prévu';
-      return `<li class="task ${e.type === 'done' ? 'is-done' : ''}" data-id="${e.plant_id}">
+      const late = e.type === 'late' ? (e.care ? careWhen(e.task) : nextText(e.plant)) : '';
+      const sub = e.type === 'done' ? (e.skip ? 'Vérifié, pas besoin' : `Fait à ${fmtTime.format(e.at)}`) : e.type === 'late' ? `<span class="late">${esc(late)}</span>` : key < today ? 'Non réalisé' : 'Prévu';
+      const title = e.care ? CARE_UI[e.care].task(e.name) : `Arroser ${e.name}`;
+      const tag = e.care ? `<span class="care-tag">${icon(CARE_UI[e.care].icon)}${esc(e.task?.label || cap(e.care))}</span>` : '';
+      return `<li class="task ${e.type === 'done' ? 'is-done' : ''}" data-id="${e.plant_id}" ${e.care ? `data-care="${e.care}"` : ''}>
         ${thumb(plantById(e.plant_id))}
-        <a class="t-body" href="#/plante/${e.plant_id}"><div class="t-title">Arroser ${esc(e.name)}</div><div class="t-sub">${[e.room ? esc(e.room) : '', sub].filter(Boolean).join(' · ')}</div></a>
-        ${canCheck ? `<button class="check" type="button" aria-label="Marquer ${esc(e.name)} comme arrosée">${icon('check')}</button>` : '<span></span>'}
+        <a class="t-body" href="#/plante/${e.plant_id}"><div class="t-title">${esc(title)}</div><div class="t-sub">${[tag, e.room ? esc(e.room) : '', sub].filter(Boolean).join(' · ')}</div></a>
+        ${canCheck ? `<button class="check" type="button" aria-label="${esc(e.care ? `Marquer comme fait : ${title}` : `Marquer ${e.name} comme arrosée`)}">${icon('check')}</button>` : '<span></span>'}
       </li>`;
     }).join('')}</ul>` : `<div class="empty-line">${icon('calendar')}<span>Aucun soin ce jour-là.</span></div>`}
     ${nextDays(events, key)}`;
   $$('.check', el).forEach((b) => (b.onclick = async () => {
+    if (b.closest('[data-care]')) return checkCareTask(b, renderCalendar);
     const p = state.plants.find((x) => x.id === Number(b.closest('.task').dataset.id));
     b.classList.add('on'); b.disabled = true;
     await water(p);
@@ -1190,7 +1384,7 @@ async function renderQuickWater() {
     <h1>${plants.length > 1 ? `${plants.length} plantes à arroser` : 'À arroser'}</h1>
     <ul class="qlist">${plants.map((p) => `<li class="qrow" data-id="${p.id}">
       ${p.thumb ? `<span class="thumb"><img src="${esc(p.thumb)}" alt=""></span>` : thumb(null)}
-      <span class="qtxt"><b>${esc(p.name)}</b><span>${[p.room, p.water?.short].filter(Boolean).map(esc).join(' · ')}</span></span>
+      <span class="qtxt"><b>${esc(p.name)}</b><span>${[p.room, p.water?.short && cap(p.water.short.replace(/^arrosage\s+/i, ''))].filter(Boolean).map(esc).join(' · ')}</span></span>
       <button class="btn sm" type="button">${icon('check')}Arrosée</button></li>`).join('')}</ul>
     ${plants[0]?.water && plants.length === 1 ? `<p class="water-hint">${icon('drop')}<span>${esc(plants[0].water.text)}</span></p>` : ''}
     ${plants.length > 1 ? `<button class="btn block" type="button" id="q-all">${icon('check')}Tout est arrosé</button>` : ''}
@@ -1267,8 +1461,28 @@ function openSheet(html, onReady) {
   onReady?.(sheet);
 }
 
+// Réglages des soins dans le formulaire : interrupteur + rythme (vide = repère de l'espèce)
+function careFormRows(p) {
+  const byType = Object.fromEntries((p?.care_tasks || []).map((t) => [t.type, t]));
+  const defaults = { engrais: p?.care?.fert || 21, rempotage: p?.care?.repot || 2, rotation: 14 };
+  return `<div class="care-form">${Object.entries(CARE_UI).map(([type, ui]) => {
+    const t = byType[type];
+    const on = t ? t.on : type === 'engrais';
+    const unit = type === 'rempotage' ? 'ans' : 'jours';
+    const val = t?.custom ? (type === 'rempotage' ? Math.round(t.every / 365) : t.every) : '';
+    const label = { engrais: 'Engrais', rempotage: 'Vérifier le rempotage', taille: 'Taille de printemps', rotation: 'Tourner le pot' }[type];
+    return `<div class="cf-row">
+      <span class="care-ico c-${type}">${icon(ui.icon)}</span>
+      <div class="cf-main"><b>${label}</b><small>${esc(CARE_INTRO[type])}</small>
+        ${type === 'taille' ? '' : `<label class="cf-every"><span>Tous les</span><input class="input" type="number" name="care_every_${type}" min="1" max="${type === 'rempotage' ? 5 : 365}" inputmode="numeric" placeholder="${defaults[type]}" value="${val}"><span>${unit}</span></label>`}
+      </div>
+      <label class="switch"><input type="checkbox" name="care_on_${type}" ${on ? 'checked' : ''} aria-label="${esc(label)}"><span></span></label>
+    </div>`;
+  }).join('')}</div>`;
+}
+
 let haEntities = null;
-async function openPlantForm(p = null, { focusSensors = false } = {}) {
+async function openPlantForm(p = null, { focusSensors = false, focusCares = false } = {}) {
   const editing = !!p;
   const rooms = [...new Set(state.plants.map((x) => x.room).filter(Boolean))];
   const interval = p?.interval_days || 7;
@@ -1383,9 +1597,15 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
               </div>`}
         </div>
 
+        <div class="form-section" id="cares-section">
+          <h3>${icon('sprout')}Autres soins</h3>
+          <p>Activez seulement ce que vous voulez suivre. Champ vide : rythme conseillé pour l'espèce.</p>
+          ${careFormRows(p)}
+        </div>
+
         <div class="form-section">
           <h3>${icon('edit')}Notes</h3>
-          <label class="field" style="margin-top:8px"><span class="visually-hidden">Notes</span><textarea class="input" name="notes" maxlength="4000" placeholder="Engrais, rempotage, particularités…">${esc(p?.notes || '')}</textarea></label>
+          <label class="field" style="margin-top:8px"><span class="visually-hidden">Notes</span><textarea class="input" name="notes" maxlength="4000" placeholder="Particularités, origine, bouture…">${esc(p?.notes || '')}</textarea></label>
         </div>
       </div>
       <div class="sheet-foot"><button class="btn block" type="submit" id="save">${editing ? 'Enregistrer' : 'Ajouter la plante'}</button></div>
@@ -1434,6 +1654,8 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
     const applyCare = (c, quiet) => {
       setIv(c.summer);
       setWinter(c.winter);
+      if (form.elements.care_every_engrais) form.elements.care_every_engrais.placeholder = c.fert;
+      if (form.elements.care_every_rempotage) form.elements.care_every_rempotage.placeholder = c.repot;
       if (!$('#seasonal-toggle', root).checked) { $('#seasonal-toggle', root).checked = true; $('#seasonal-toggle', root).onchange({ target: $('#seasonal-toggle', root) }); }
       const radio = form.querySelector(`[name=light][value="${c.light}"]`);
       if (radio) radio.checked = true;
@@ -1560,6 +1782,14 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
       btn.disabled = true; btn.textContent = 'Enregistrement…';
       try {
         const fd = new FormData(form);
+        const cares = {};
+        for (const t of Object.keys(CARE_UI)) {
+          const ev = form.elements[`care_every_${t}`]?.value.trim();
+          cares[t] = { on: !!form.elements[`care_on_${t}`]?.checked };
+          if (ev !== undefined) cares[t].every = ev ? Math.round(Number(ev) * (t === 'rempotage' ? 365 : 1)) : null;
+          fd.delete(`care_on_${t}`); fd.delete(`care_every_${t}`);
+        }
+        fd.set('cares', JSON.stringify(cares));
         if (!fileInput.files.length) fd.delete('photo');
         if (!fd.get('ref_photo_url')) ['ref_photo_url', 'ref_photo_attribution', 'ref_photo_license', 'ref_photo_page'].forEach((k) => fd.delete(k));
         const saved = await api(editing ? `/api/plants/${p.id}` : '/api/plants', { method: editing ? 'PUT' : 'POST', body: fd });
@@ -1573,6 +1803,7 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
       }
     };
     if (focusSensors) setTimeout(() => $('#sensors-section', root)?.scrollIntoView({ block: 'start' }), 60);
+    else if (focusCares) setTimeout(() => $('#cares-section', root)?.scrollIntoView({ block: 'start' }), 60);
     else if (!editing) setTimeout(() => form.elements.name.focus(), 60);
   });
 }

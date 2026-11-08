@@ -252,6 +252,7 @@ export function setupGoogle(app, ctx) {
   const calSettings = (user) => ({ ...DEFAULT_CAL, ...JSON.parse(user.cal_settings || '{}') });
   // Identifiant d'événement stable : caractères autorisés par Google (a-v, 0-9)
   const eventId = (plantId, day) => `rosee${plantId}d${day.replace(/-/g, '')}`.replace(/[^a-v0-9]/g, '0');
+  const careEventId = (plantId, i, day) => `rosee${plantId}c${i}d${day.replace(/-/g, '')}`.replace(/[^a-v0-9]/g, '0');
   const plusMinutes = (hm, min) => {
     const [h, m] = hm.split(':').map(Number);
     const t = Math.min(h * 60 + m + min, 23 * 60 + 59);
@@ -281,6 +282,22 @@ export function setupGoogle(app, ctx) {
           extendedProperties: { private: { rosee: '1', plant: String(p.id) } },
         };
         out.set(eventId(p.id, day), { plant_id: p.id, day, body });
+      }
+      // Autres soins (engrais, rempotage…) : un événement par échéance, identifiants distincts des arrosages
+      for (const [i, t] of (p.care_tasks || []).entries()) {
+        if (!t.on) continue;
+        for (const day of t.dates) {
+          if (day < today || day > addDaysKey(today, s.horizon)) continue;
+          out.set(careEventId(p.id, i, day), { plant_id: p.id, day, body: {
+            summary: `${t.emoji} ${t.verb} · ${p.name}`,
+            description: [p.room && `Pièce : ${p.room}`, t.help, PUBLIC_URL && `${PUBLIC_URL}/#/plante/${p.id}`].filter(Boolean).join('\n'),
+            ...(p.room ? { location: p.room } : {}),
+            start: { dateTime: `${day}T${s.time}:00`, timeZone: TZ },
+            end: { dateTime: `${day}T${plusMinutes(s.time, s.duration)}:00`, timeZone: TZ },
+            reminders, colorId: '5', transparency: 'transparent',
+            extendedProperties: { private: { rosee: '1', plant: String(p.id), care: t.type } },
+          } });
+        }
       }
       // Arrosée aujourd'hui alors qu'un événement existait : on le marque comme fait plutôt que de le supprimer
       const id = eventId(p.id, today);

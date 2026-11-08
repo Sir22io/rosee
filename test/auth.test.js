@@ -85,6 +85,19 @@ test('changer les alertes met à jour les événements existants', async () => {
   assert.equal(ev.reminders.overrides[0].method, 'email');
 });
 
+test('un soin activé ajoute ses propres événements, sans toucher aux arrosages', async () => {
+  const p = (await app.api('/api/plants')).data[0];
+  const before = google.liveEvents().filter((e) => /Arroser/.test(e.summary)).length;
+  await app.api(`/api/plants/${p.id}/cares`, { method: 'PUT', json: { rotation: { on: true } } });
+  await app.api('/api/me/calendar/sync', { method: 'POST' });
+  const evs = google.liveEvents();
+  assert.ok(evs.some((e) => /Tourner le pot.*Monstera/.test(e.summary)));
+  assert.equal(evs.filter((e) => /Arroser/.test(e.summary)).length, before);
+  await app.api(`/api/plants/${p.id}/cares`, { method: 'PUT', json: { rotation: { on: false } } });
+  await app.api('/api/me/calendar/sync', { method: 'POST' });
+  assert.equal(google.liveEvents().some((e) => /Tourner/.test(e.summary)), false);
+});
+
 test('supprimer la plante retire ses événements à venir', async () => {
   const p = (await app.api('/api/plants')).data[0];
   await app.api(`/api/plants/${p.id}`, { method: 'DELETE' });

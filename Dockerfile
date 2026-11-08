@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -r
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.js care.js google.js ./
+COPY server.js care.js cares.js google.js ./
 ARG ROSEE_VERSION=""
 ARG ROSEE_COMMIT=dev
 ARG ROSEE_BUILT=""

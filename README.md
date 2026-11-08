@@ -63,11 +63,17 @@ Le HTTPS est obligatoire pour le service worker et les notifications.
   - **au-delà**, une seule notification groupée.
 - Les notifications portent deux boutons : **« Arrosée »** (ou « Tout est arrosé ») et **« Dans 3 h »**. Ils marchent depuis l'écran verrouillé, sans ouvrir l'appli, grâce à un jeton signé valable 3 jours et limité aux plantes concernées. Un double appui ne crée pas de doublon. Les boutons s'affichent sur Android, Windows et macOS. Sur iPhone, iOS n'affiche pas ces boutons : toucher la notification ouvre un **écran d'arrosage rapide**, avec un bouton « Arrosée » par plante, « Tout est arrosé » et « Me le rappeler dans 3 h ». Cet écran fonctionne aussi sans session, grâce au même jeton.
 - Les plantes signalées par un capteur font l'objet d'une notification « À surveiller » à part.
+- Les autres soins du jour (engrais, rempotage, taille, rotation) font l'objet d'une notification « Soins » à part, sans bouton : ils demandent de regarder la plante.
 
 ## Repères d'entretien et saisons
 
 - **Repères par espèce** (`care.js`) : la base couvre une cinquantaine de plantes d'intérieur et d'aromatiques. Elle donne le rythme d'arrosage en été et en hiver, la lumière, la température et l'humidité, avec quelques conseils. La correspondance se fait sur l'espèce, puis sur le genre, puis sur le nom commun. Les repères sont proposés dans le formulaire (appliqués d'office pour une nouvelle plante) et affichés sur la fiche. Ils servent aussi de seuils par défaut pour les alertes des capteurs.
 - **Arrosage saisonnier** : chaque plante a un rythme d'été et un rythme d'hiver. Si le rythme d'hiver n'est pas renseigné, il vaut 1,6 fois celui d'été. Entre les deux, Rosée interpole mois par mois : plein été de juin à août, plein hiver de décembre à janvier. Le calendrier, l'agenda et les rappels suivent ce rythme. L'option se désactive plante par plante. Pour l'hémisphère sud, mets `SEASONS=south`.
+- **Autres soins** (`cares.js`), réglables plante par plante dans la fiche (carte « Autres soins ») ou le formulaire :
+  - **Engrais** (actif par défaut) : au rythme de l'espèce, de mars à septembre seulement. En dehors, la fiche affiche « Reprise le 1er mars » et rien n'est en retard. Le premier engrais d'une nouvelle plante arrive après un cycle.
+  - **Rempotage** (désactivé par défaut) : ce n'est pas une corvée planifiée mais une vérification au printemps (mars à mai), tous les 1 à 3 ans selon l'espèce. Rosée affiche les signes à regarder ; « Pas cette année » repousse la vérification d'un an.
+  - **Taille** (désactivée) : une fois par an au printemps. **Rotation** (désactivée) : un quart de tour toutes les deux semaines, toute l'année.
+  - Les soins activés apparaissent dans les tâches du jour, le calendrier, le flux .ics et Google Agenda (événements distincts des arrosages). Leur journal est dans l'onglet Historique et dans les exports.
 - Le nom scientifique trouvé avec la photo automatique est enregistré comme espèce s'il n'était pas renseigné.
 
 ## Photos des plantes
@@ -200,4 +206,8 @@ Sauvegarde tout le dossier `data/` (`rosee.db`, `photos/`, `vapid.json`, `secret
 | `POST /api/plants/:id/water` | Arrosage (`{ "at": "ISO" }` en option) |
 | `GET /api/plants/:id/history?metric=moisture&hours=168` | Série agrégée d'une mesure |
 | `GET /api/waterings?from=&to=` | Arrosages réalisés sur une période |
+| `PUT /api/plants/:id/cares` | Activer un soin ou changer son rythme : `{ "rotation": { "on": true, "every": 14 } }` |
+| `POST /api/plants/:id/care/:type` | Soin effectué (`engrais`, `rempotage`, `taille`, `rotation`) ; `{ "action": "skip" }` = rempotage pas nécessaire cette année |
+| `DELETE /api/care-log/:id` | Annuler un soin enregistré |
+| `GET /api/care-log?from=&to=` | Soins réalisés sur une période |
 | `POST /api/push/test` | Envoie la notification du jour |

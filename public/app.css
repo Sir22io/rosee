@@ -632,8 +632,10 @@ fieldset.field { border: 0; padding: 0; margin-inline: 0; min-width: 0; }
 .qlist { list-style: none; margin: 0 0 14px; padding: 0; text-align: left; }
 .qrow { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
 .qrow .thumb { width: 48px; height: 48px; border-radius: 14px; }
-.qrow .qtxt b { display: block; font-size: 16px; }
-.qrow .qtxt span { font-size: 13px; color: var(--ink-2); }
+.qrow .qtxt { min-width: 0; }
+.qrow .qtxt b { display: block; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qrow .qtxt span { display: block; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qrow .btn.sm { padding-inline: 12px; }
 .qrow.done .thumb { opacity: .55; }
 .quick-card .water-hint { text-align: left; margin: 0 0 14px; }
 .quick-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
@@ -747,3 +749,50 @@ body.logged-out .view { max-width: none; padding: 0; margin: 0; }
 .skeleton { padding: 80px 0; text-align: center; color: var(--ink-3); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* ---------- Autres soins ---------- */
+.care-tag { display: inline-flex; align-items: center; gap: 4px; color: var(--green-deep); font-weight: 700; }
+.care-tag svg { font-size: 13px; }
+.cares { list-style: none; margin: 0; padding: 0; }
+.care-row { display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; align-items: start; padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+.care-row:first-child { padding-top: 2px; }
+.care-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.care-ico { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: var(--green-soft); color: var(--green-deep); }
+.care-ico svg { font-size: 19px; }
+.care-ico.c-rempotage { background: var(--orange-soft); color: var(--orange-ink); }
+.care-ico.c-rotation { background: var(--teal-soft); color: var(--teal-ink); }
+.care-row.off .care-ico { background: var(--card-2); color: var(--ink-3); }
+.care-main { min-width: 0; }
+.care-top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.care-top b { font-size: 14.5px; }
+.care-when { font-size: 12.5px; font-weight: 700; color: var(--ink-2); }
+.care-when.due { color: var(--green-deep); }
+.care-when.late { color: var(--orange-ink); }
+.care-main p { margin: 2px 0 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+.care-main .care-last { color: var(--ink-3); }
+.care-main .btn { margin-top: 8px; }
+.care-help { margin-top: 6px; font-size: 12.5px; }
+.care-help summary { cursor: pointer; color: var(--green); font-weight: 700; list-style: none; }
+.care-help summary::-webkit-details-marker { display: none; }
+.care-help summary::after { content: " +"; }
+.care-help[open] summary::after { content: " −"; }
+.care-help p { margin-top: 4px; }
+.care-row .switch { margin-top: 4px; }
+.repot-note { margin-top: 14px; padding: 12px 14px; border-radius: 14px; background: var(--card-2); font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+.repot-note p { margin: 0; }
+.repot-note p + p { margin-top: 8px; }
+.repot-note b { color: var(--ink); }
+.care-form { display: grid; gap: 4px; margin-top: 8px; }
+.cf-row { display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.cf-row:last-child { border-bottom: 0; }
+.cf-main b { display: block; font-size: 14px; }
+.cf-main small { display: block; font-size: 12px; color: var(--ink-2); line-height: 1.4; margin-top: 2px; }
+.cf-every { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--ink-2); }
+.cf-every .input { width: 76px; padding: 8px 10px; min-height: 0; }
+.timeline .dot.c-engrais, .timeline .dot.c-taille { background: var(--green-soft); box-shadow: inset 0 0 0 4px var(--green); }
+.timeline .dot.c-rempotage { background: var(--orange-soft); box-shadow: inset 0 0 0 4px var(--orange); }
+.day .dots i.care { background: var(--green); }
+@media (min-width: 1024px) {
+  .day .pills span.care { background: var(--green-soft); color: var(--green-deep); }
+  .day .pills span svg { font-size: 11px; vertical-align: -1px; margin-right: 3px; }
+}

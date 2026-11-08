@@ -10,6 +10,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { findCare } from './care.js';
+import { CARE_KEYS, careSettings, careStatus } from './cares.js';
 import { setupGoogle } from './google.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +83,19 @@ if (!cols.includes('photo_credit')) db.exec(`ALTER TABLE plants ADD COLUMN photo
 if (!cols.includes('interval_winter')) db.exec(`ALTER TABLE plants ADD COLUMN interval_winter INTEGER DEFAULT NULL`);
 if (!cols.includes('seasonal')) db.exec(`ALTER TABLE plants ADD COLUMN seasonal INTEGER NOT NULL DEFAULT 1`);
 if (!cols.includes('photo_lookup')) db.exec(`ALTER TABLE plants ADD COLUMN photo_lookup INTEGER NOT NULL DEFAULT 0`);
+// Autres soins (engrais, rempotage, taille, rotation) : réglages par plante et journal
+if (!cols.includes('cares')) db.exec(`ALTER TABLE plants ADD COLUMN cares TEXT NOT NULL DEFAULT '{}'`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS care_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plant_id INTEGER NOT NULL REFERENCES plants(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    at TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    user_id INTEGER DEFAULT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_care_log_plant ON care_log(plant_id, type, at DESC);
+`);
 
 const getSetting = (k, d) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value ?? d;
 const setSetting = (k, v) =>
@@ -249,6 +263,15 @@ function upcomingDates(p, daysLeft, horizonDays) {
   return out;
 }
 
+// Dernier soin de chaque type, puis état (prochaine date, retard, dates à venir)
+function careTasksFor(p, care, today = localDateKey()) {
+  const last = {};
+  for (const r of db.prepare('SELECT type, at, note FROM care_log WHERE plant_id=? ORDER BY at DESC LIMIT 200').all(p.id)) {
+    if (!last[r.type]) last[r.type] = { at: r.at, key: localDateKey(new Date(r.at)), note: r.note };
+  }
+  return careStatus({ settings: careSettings(parseJSON(p.cares, {}), care), last, today, created: p.created_at ? localDateKey(new Date(`${p.created_at.replace(' ', 'T')}Z`)) : null, south: SOUTH });
+}
+
 function serializePlant(p, states) {
   const last = db.prepare('SELECT at FROM waterings WHERE plant_id=? ORDER BY at DESC LIMIT 1').get(p.id)?.at || null;
   const count = db.prepare('SELECT COUNT(*) c FROM waterings WHERE plant_id=?').get(p.id).c;
@@ -298,6 +321,7 @@ function serializePlant(p, states) {
     current_interval: intervalAt(p, new Date()),
     month_intervals: Array.from({ length: 12 }, (_, m) => intervalForMonth(p, m)),
     care,
+    care_tasks: careTasksFor(p, care),
     notes: p.notes,
     created_at: p.created_at,
     photo_url: p.photo ? `/photos/${p.photo}` : null,
@@ -390,6 +414,16 @@ async function buildReminders(onlyIds = null) {
       tag: 'rosee-daily',
       ...(() => { const t = actionToken(due.map((p) => p.id)); return { token: t, url: `/#/arroser?t=${t}` }; })(),
       actions: actions(due.length), done: `${due.length} plantes arrosées`,
+    });
+  }
+  // Autres soins du jour : une seule notification, sans action (ils demandent de regarder la plante)
+  const cares = onlyIds ? [] : plants.flatMap((p) => p.care_tasks.filter((t) => t.on && t.days_left <= 0).map((t) => ({ p, t })));
+  if (cares.length) {
+    const one = cares.length === 1 ? cares[0] : null;
+    out.push({
+      title: one ? `${one.t.verb} · ${one.p.name}` : `${cares.length} soins à faire`,
+      body: one ? one.t.help.split('. ')[0] + '.' : listNames(cares.map(({ p, t }) => `${p.name} (${t.label.toLowerCase()})`)),
+      url: one ? `/#/plante/${one.p.id}` : '/#/', tag: 'rosee-care',
     });
   }
   if (attention.length) {
@@ -525,6 +559,16 @@ app.get('/cal/:token.ics', wrap(async (req, res) => {
         `SUMMARY:${icsEscape(`💧 Arroser ${p.name}`)}`,
         ...(p.room ? [`LOCATION:${icsEscape(p.room)}`] : []),
         `DESCRIPTION:${icsEscape([p.care?.water && `${p.care.water.short}. ${p.care.water.text}`, `Rythme actuel : tous les ${interval} jours.`].filter(Boolean).join('\n'))}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
+    }
+    for (const t of p.care_tasks) {
+      if (!t.on) continue;
+      for (const key of t.dates.filter((d) => d <= addDaysKey(today, horizon))) {
+        lines.push('BEGIN:VEVENT', `UID:rosee-${t.type}-${p.id}-${key}@rosee`, `DTSTAMP:${stamp}`,
+          `DTSTART;VALUE=DATE:${icsDate(key)}`, `DTEND;VALUE=DATE:${icsDate(addDaysKey(key, 1))}`,
+          `SUMMARY:${icsEscape(`${t.emoji} ${t.verb} · ${p.name}`)}`,
+          ...(p.room ? [`LOCATION:${icsEscape(p.room)}`] : []),
+          `DESCRIPTION:${icsEscape(t.help)}`, 'TRANSP:TRANSPARENT', 'END:VEVENT');
+      }
     }
   }
   lines.push('END:VCALENDAR');
@@ -767,6 +811,24 @@ function plantFields(body) {
   };
 }
 
+// Réglages des soins envoyés par l'appli : { engrais: { on: true, every: 21 }, … } ; every: null = repère de l'espèce
+function mergeCares(stored, input) {
+  const out = { ...stored };
+  for (const t of CARE_KEYS) {
+    const v = input[t];
+    if (!v || typeof v !== 'object') continue;
+    const cur = { ...(out[t] || {}) };
+    if (typeof v.on === 'boolean') cur.on = v.on;
+    if (v.every === null || v.every === '') delete cur.every;
+    else if (v.every !== undefined) {
+      const n = parseInt(v.every, 10);
+      if (Number.isFinite(n) && n >= 1) cur.every = Math.min(t === 'rempotage' ? 1825 : 365, n);
+    }
+    out[t] = cur;
+  }
+  return out;
+}
+
 const getPlantRow = (id) => db.prepare('SELECT * FROM plants WHERE id=?').get(id);
 
 app.get('/api/plants', wrap(async (_req, res) => res.json(await allPlants())));
@@ -775,7 +837,8 @@ app.get('/api/plants/:id', wrap(async (req, res) => {
   const p = getPlantRow(req.params.id);
   if (!p) return res.status(404).json({ error: 'Plante introuvable' });
   const history = db.prepare('SELECT id, at, note FROM waterings WHERE plant_id=? ORDER BY at DESC LIMIT 200').all(p.id);
-  res.json({ ...serializePlant(p, await loadStates([p])), history });
+  const care_history = db.prepare('SELECT id, type, at, note FROM care_log WHERE plant_id=? ORDER BY at DESC LIMIT 200').all(p.id);
+  res.json({ ...serializePlant(p, await loadStates([p])), history, care_history });
 }));
 
 app.post('/api/plants', upload.single('photo'), wrap(async (req, res) => {
@@ -788,8 +851,9 @@ app.post('/api/plants', upload.single('photo'), wrap(async (req, res) => {
     photo_source = 'ref'; photo_credit = refCredit(req.body); photo_lookup = 1;
   }
   const info = db
-    .prepare('INSERT INTO plants(name,species,room,light,interval_days,interval_winter,seasonal,notes,photo,sensors,targets,photo_source,photo_credit,photo_lookup) VALUES(@name,@species,@room,@light,@interval_days,@interval_winter,@seasonal,@notes,@photo,@sensors,@targets,@photo_source,@photo_credit,@photo_lookup)')
-    .run({ ...f, photo, photo_source, photo_credit, photo_lookup });
+    .prepare('INSERT INTO plants(name,species,room,light,interval_days,interval_winter,seasonal,notes,photo,sensors,targets,photo_source,photo_credit,photo_lookup,cares) VALUES(@name,@species,@room,@light,@interval_days,@interval_winter,@seasonal,@notes,@photo,@sensors,@targets,@photo_source,@photo_credit,@photo_lookup,@cares)')
+    .run({ ...f, photo, photo_source, photo_credit, photo_lookup, cares: JSON.stringify(mergeCares({}, parseJSON(req.body.cares, {}))) });
+  google.scheduleSync();
   if (!photo) runPhotoLookups();
   if (req.body.watered_today === '1') db.prepare('INSERT INTO waterings(plant_id, at) VALUES(?,?)').run(info.lastInsertRowid, new Date().toISOString());
   res.status(201).json(serializePlant(getPlantRow(info.lastInsertRowid), await loadStates([])));
@@ -814,8 +878,9 @@ app.put('/api/plants/:id', upload.single('photo'), wrap(async (req, res) => {
     photo = null; photo_source = null; photo_credit = null; photo_lookup = 0;
   }
   if (photo !== existing.photo) removePhoto(existing.photo);
-  db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,interval_winter=@interval_winter,seasonal=@seasonal,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets,photo_source=@photo_source,photo_credit=@photo_credit,photo_lookup=@photo_lookup WHERE id=@id')
-    .run({ ...f, photo, photo_source, photo_credit, photo_lookup, id: existing.id });
+  const cares = req.body.cares ? JSON.stringify(mergeCares(parseJSON(existing.cares, {}), parseJSON(req.body.cares, {}))) : existing.cares;
+  db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,interval_winter=@interval_winter,seasonal=@seasonal,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets,photo_source=@photo_source,photo_credit=@photo_credit,photo_lookup=@photo_lookup,cares=@cares WHERE id=@id')
+    .run({ ...f, photo, photo_source, photo_credit, photo_lookup, cares, id: existing.id });
   if (!photo && photo_lookup === 0) runPhotoLookups();
   google.scheduleSync();
   res.json(serializePlant(getPlantRow(existing.id), await loadStates([])));
@@ -849,6 +914,47 @@ app.delete('/api/waterings/:id', (req, res) => {
   db.prepare('DELETE FROM waterings WHERE id=?').run(req.params.id);
   google.scheduleSync(2000);
   res.json({ ok: true });
+});
+
+// ---------- Autres soins ----------
+// done : soin effectué ; skip : « pas besoin cette année » (rempotage), la vérification revient dans un an
+app.post('/api/plants/:id/care/:type', (req, res) => {
+  const p = getPlantRow(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Plante introuvable' });
+  const type = req.params.type;
+  if (!CARE_KEYS.includes(type)) return res.status(400).json({ error: 'Soin inconnu' });
+  const action = req.body?.action || 'done';
+  if (!['done', 'skip'].includes(action) || (action === 'skip' && type !== 'rempotage')) return res.status(400).json({ error: 'Action inconnue' });
+  let at = new Date();
+  if (req.body?.at) {
+    const d = new Date(req.body.at);
+    if (!isNaN(d) && d <= new Date(Date.now() + 60000)) at = d;
+  }
+  const info = db.prepare('INSERT INTO care_log(plant_id, type, at, note, user_id) VALUES(?,?,?,?,?)').run(p.id, type, at.toISOString(), action === 'skip' ? 'skip' : '', req.user?.id ?? null);
+  google.scheduleSync(2000);
+  res.status(201).json({ care_id: info.lastInsertRowid, care_tasks: careTasksFor(p, findCare(p.species, p.name)) });
+});
+app.delete('/api/care-log/:id', (req, res) => {
+  const r = db.prepare('DELETE FROM care_log WHERE id=?').run(req.params.id);
+  if (!r.changes) return res.status(404).json({ error: 'Soin introuvable' });
+  google.scheduleSync(2000);
+  res.json({ ok: true });
+});
+// Activer / désactiver un soin, ou changer son rythme
+app.put('/api/plants/:id/cares', (req, res) => {
+  const p = getPlantRow(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Plante introuvable' });
+  const cares = mergeCares(parseJSON(p.cares, {}), req.body || {});
+  db.prepare('UPDATE plants SET cares=? WHERE id=?').run(JSON.stringify(cares), p.id);
+  google.scheduleSync(2000);
+  res.json({ care_tasks: careTasksFor({ ...p, cares: JSON.stringify(cares) }, findCare(p.species, p.name)) });
+});
+app.get('/api/care-log', (req, res) => {
+  const from = new Date(req.query.from || Date.now() - 31 * DAY);
+  const to = new Date(req.query.to || Date.now());
+  if (isNaN(from) || isNaN(to)) return res.status(400).json({ error: 'Période invalide' });
+  res.json(db.prepare(`SELECT c.id, c.at, c.type, c.note, c.plant_id, p.name AS plant_name, p.room FROM care_log c JOIN plants p ON p.id = c.plant_id
+    WHERE c.at >= ? AND c.at <= ? ORDER BY c.at DESC LIMIT 2000`).all(from.toISOString(), to.toISOString()));
 });
 
 // Arrosages effectués sur une période (calendrier, activité récente)
@@ -1032,7 +1138,7 @@ app.get('/api/backups', (_req, res) => {
   res.json({ keep: BACKUP_KEEP, backups: list });
 });
 
-const EXPORT_COLS = ['name', 'species', 'room', 'light', 'interval_days', 'interval_winter', 'seasonal', 'notes', 'sensors', 'targets', 'photo_source', 'photo_credit', 'created_at'];
+const EXPORT_COLS = ['name', 'species', 'room', 'light', 'interval_days', 'interval_winter', 'seasonal', 'notes', 'sensors', 'targets', 'photo_source', 'photo_credit', 'created_at', 'cares'];
 app.get('/api/export', (req, res) => {
   const withPhotos = req.query.photos !== '0';
   const plants = db.prepare('SELECT * FROM plants ORDER BY id').all().map((p) => {
@@ -1044,9 +1150,10 @@ app.get('/api/export', (req, res) => {
     return o;
   });
   const waterings = db.prepare('SELECT plant_id AS plant_ref, at, note FROM waterings ORDER BY at').all();
+  const care_log = db.prepare('SELECT plant_id AS plant_ref, type, at, note FROM care_log ORDER BY at').all();
   const settings = Object.fromEntries(db.prepare("SELECT key, value FROM settings WHERE key IN ('reminder_enabled','reminder_time','user_name')").all().map((r) => [r.key, r.value]));
   res.set('Content-Disposition', `attachment; filename="rosee-export-${localDateKey()}.json"`);
-  res.json({ app: 'rosee', format: 1, version: BUILD.version, exported_at: new Date().toISOString(), plants, waterings, settings });
+  res.json({ app: 'rosee', format: 1, version: BUILD.version, exported_at: new Date().toISOString(), plants, waterings, care_log, settings });
 });
 
 // Restauration : remplace toutes les plantes et l'historique (sauvegarde automatique juste avant)
@@ -1063,8 +1170,9 @@ app.post('/api/import', express.json({ limit: '80mb' }), wrap(async (req, res) =
   }
   const old = db.prepare('SELECT photo FROM plants WHERE photo IS NOT NULL').all().map((r) => r.photo);
   const str = (v, n) => String(v ?? '').slice(0, n);
-  const insertPlant = db.prepare(`INSERT INTO plants(name,species,room,light,interval_days,interval_winter,seasonal,notes,sensors,targets,photo,photo_source,photo_credit,photo_lookup,created_at)
-    VALUES(@name,@species,@room,@light,@interval_days,@interval_winter,@seasonal,@notes,@sensors,@targets,@photo,@photo_source,@photo_credit,1,@created_at)`);
+  const insertPlant = db.prepare(`INSERT INTO plants(name,species,room,light,interval_days,interval_winter,seasonal,notes,sensors,targets,photo,photo_source,photo_credit,photo_lookup,created_at,cares)
+    VALUES(@name,@species,@room,@light,@interval_days,@interval_winter,@seasonal,@notes,@sensors,@targets,@photo,@photo_source,@photo_credit,1,@created_at,@cares)`);
+  const insertC = db.prepare('INSERT INTO care_log(plant_id, type, at, note) VALUES(?,?,?,?)');
   const insertW = db.prepare('INSERT INTO waterings(plant_id, at, note) VALUES(?,?,?)');
   const refMap = new Map();
   db.transaction(() => {
@@ -1080,6 +1188,7 @@ app.post('/api/import', express.json({ limit: '80mb' }), wrap(async (req, res) =
         photo: photos.get(p.ref) || null, photo_source: photos.get(p.ref) ? str(p.photo_source || 'user', 10) : null,
         photo_credit: photos.get(p.ref) && p.photo_credit ? str(p.photo_credit, 600) : null,
         created_at: str(p.created_at, 30) || new Date().toISOString().slice(0, 19).replace('T', ' '),
+        cares: JSON.stringify(mergeCares({}, parseJSON(p.cares, {}))),
       });
       refMap.set(p.ref, info.lastInsertRowid);
     }
@@ -1087,6 +1196,11 @@ app.post('/api/import', express.json({ limit: '80mb' }), wrap(async (req, res) =
       const id = refMap.get(w.plant_ref);
       const at = new Date(w.at);
       if (id && !isNaN(at)) insertW.run(id, at.toISOString(), str(w.note, 500));
+    }
+    for (const c of Array.isArray(d.care_log) ? d.care_log.slice(0, 200000) : []) {
+      const id = refMap.get(c.plant_ref);
+      const at = new Date(c.at);
+      if (id && !isNaN(at) && CARE_KEYS.includes(c.type)) insertC.run(id, c.type, at.toISOString(), c.note === 'skip' ? 'skip' : '');
     }
     for (const [k, v] of Object.entries(d.settings || {})) if (['reminder_enabled', 'reminder_time', 'user_name'].includes(k)) setSetting(k, str(v, 40));
   })();
