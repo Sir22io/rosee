@@ -165,7 +165,7 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 
 ## Versions et mises à jour
 
-- La version est celle de `package.json`. Chaque push sur `main` publie l'image `latest` et une étiquette `sha-<commit>`. Un tag Git `vX.Y.Z` publie en plus les étiquettes `X.Y.Z` et `X.Y`.
+- La version est celle de `package.json`. **Tout est automatique** : à chaque push sur `main`, GitHub Actions construit et publie l'image (`latest` et `sha-<commit>`). Si la version de `package.json` est nouvelle, il crée aussi le tag `vX.Y.Z`, la release GitHub (notes générées) et les étiquettes d'image `X.Y.Z` et `X.Y`. Pour publier une version, il suffit d'augmenter le numéro dans `package.json`.
 - Pour figer une version dans Portainer, remplace `latest` par `2.1.0` dans `portainer-stack.yml` (ou dans une copie de la stack).
 - **Paramètres → À propos** affiche la version, le commit et la date de construction. Rosée compare son commit à celui de la dernière image construite avec succès par GitHub Actions et signale « Mise à jour disponible » avec la liste des changements. La vérification a lieu toutes les 6 h, ou à la demande, et passe par l'API publique de GitHub (`api.github.com`). `UPDATE_CHECK=0` la désactive.
 

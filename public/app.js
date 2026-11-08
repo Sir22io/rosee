@@ -112,11 +112,24 @@ function media(p) {
     : `<div class="ph">${icon('pot')}</div>`;
 }
 
+// Part d'eau restante avant le prochain arrosage (1 = vient d'être arrosée)
+const waterLeft = (p) => (!p.last_watered_at ? 0 : Math.max(0, Math.min(1, p.days_left / (p.current_interval || p.interval_days))));
+function gauge(p) {
+  const f = waterLeft(p);
+  const label = p.days_left <= 0 ? nextText(p) : `${Math.round(f * 100)} % de réserve, ${nextText(p).toLowerCase()}`;
+  return `<span class="gauge ${p.days_left <= 0 ? 'dry' : ''}" role="img" aria-label="${esc(label)}"><i style="width:${(f * 100).toFixed(1)}%"></i></span>`;
+}
+function thumb(p, extra = '') {
+  if (!p) return `<span class="thumb ${extra}"><span class="ph">${icon('pot')}</span></span>`;
+  return `<span class="thumb ${extra}">${p.photo_url ? `<img src="${esc(p.photo_url)}" alt="" loading="lazy" decoding="async">` : `<span class="ph">${icon('pot')}</span>`}</span>`;
+}
+const plantById = (id) => state.plants.find((x) => x.id === Number(id));
+
 function plantCard(p) {
   const moist = p.sensors?.moisture;
   const conn = hasSensors(p) ? `<span class="conn ${sensorOffline(p) ? 'off' : ''}" title="${sensorOffline(p) ? 'Capteur à vérifier' : 'Capteur connecté'}">${icon('sensor')}</span>` : '';
   return `<a class="pcard" href="#/plante/${p.id}">
-    <div class="media">${media(p)}${conn}</div>
+    <div class="media">${media(p)}${conn}${gauge(p)}</div>
     <div class="body">
       <div class="name">${esc(p.name)}</div>
       <div class="species">${esc(p.species || p.room || ' ')}</div>
@@ -204,29 +217,32 @@ async function renderHome() {
       <div class="head-actions mobile-only"><a class="icon-btn" href="#/parametres" aria-label="Paramètres">${icon('gear')}</a></div>
     </div>
     ${!P.length ? emptyGarden() : `
-    <div class="home-grid">
-      <div class="kpis span-2">
-        <div class="kpi green"><div class="ico">${icon('plants')}</div><b>${P.length}</b><span>Plantes</span></div>
-        <div class="kpi teal"><div class="ico">${icon('drop')}</div><b>${due.length}</b><span>À arroser</span></div>
-        <div class="kpi red"><div class="ico">${icon('alert')}</div><b>${alerts.length}</b><span>${alerts.length > 1 ? 'Alertes' : 'Alerte'}</span></div>
-        <div class="kpi green web-only"><div class="ico">${icon('check-circle')}</div><b>${healthy}</b><span>En bonne santé</span></div>
+    <section class="card figures" aria-label="Résumé de la serre">
+      <div class="fig"><b>${P.length}</b><span>${P.length > 1 ? 'plantes' : 'plante'}</span></div>
+      <div class="fig ${due.length ? 'is-due' : ''}"><b>${due.length}</b><span>à arroser aujourd'hui</span></div>
+      <div class="fig ${alerts.length ? 'is-alert' : ''}"><b>${alerts.length}</b><span>${alerts.length > 1 ? 'alertes' : 'alerte'} capteur</span></div>
+      <div class="fig"><b>${healthy}</b><span>en bonne santé</span></div>
+    </section>
+
+    <div class="home-cols">
+      <div class="col">
+        <section class="card o1">
+          <div class="section-title"><h2>Tâches du jour</h2><a href="#/calendrier">Calendrier</a></div>
+          ${due.length ? `<ul class="tasks" id="tasks">${due.map(taskRow).join('')}</ul>`
+            : `<div class="empty-line">${icon('check-circle')}<span>Aucun arrosage prévu aujourd'hui.${nextUp()}</span></div>`}
+        </section>
+        <section class="card o4" id="activity"><div class="section-title"><h2>Activité récente</h2></div><div class="muted">Chargement…</div></section>
       </div>
+      <div class="col">
+        <section class="card o2" id="conditions"></section>
+        <section class="card o5" id="upcoming"></section>
+      </div>
+    ${attention.length ? `<section class="watch-wrap o3">
+      <div class="section-title"><h2>Plantes à surveiller</h2><a href="#/plantes?f=care">Tout voir</a></div>
+      <div class="watch">${attention.slice(0, isWide() ? 5 : 8).map(plantCard).join('')}</div>
+    </section>` : ''}
+    </div>
 
-      <section class="card">
-        <div class="section-title"><h2>Tâches du jour</h2><a href="#/calendrier">Tout voir</a></div>
-        ${due.length ? `<ul class="tasks" id="tasks">${due.map(taskRow).join('')}</ul>`
-          : `<div class="empty-line">${icon('check-circle')}<span>Aucun arrosage prévu aujourd'hui.${nextUp()}</span></div>`}
-      </section>
-
-      <section class="card" id="conditions"></section>
-
-      ${attention.length ? `<section class="span-2">
-        <div class="section-title"><h2>Plantes à surveiller</h2><a href="#/plantes?f=care">Tout voir</a></div>
-        <div class="watch">${attention.slice(0, isWide() ? 6 : 8).map(plantCard).join('')}</div>
-      </section>` : ''}
-
-      <section class="card" id="activity"><div class="section-title"><h2>Activité récente</h2></div><div class="muted">Chargement…</div></section>
-      <section class="card web-only" id="upcoming"></section>
     </div>`}
   `;
   bindAdd();
@@ -239,7 +255,7 @@ async function renderHome() {
     const el = $('#activity');
     if (!el) return;
     el.innerHTML = `<div class="section-title"><h2>Activité récente</h2></div>${rows.length
-      ? `<ul class="activity">${rows.slice(0, 6).map((w) => `<li><span class="a-ico">${icon('drop')}</span><span><b>${esc(w.plant_name)}</b> arrosée${w.by_name ? ` par ${esc(w.by_name)}` : ''}</span><time datetime="${esc(w.at)}">${esc(relAgo(w.at))}</time></li>`).join('')}</ul>`
+      ? `<ul class="activity">${rows.slice(0, 5).map((w) => `<li>${thumb(plantById(w.plant_id), 'sm')}<span><b>${esc(w.plant_name)}</b> arrosée${w.by_name ? ` par ${esc(w.by_name)}` : ''}</span><time datetime="${esc(w.at)}">${esc(relAgo(w.at))}</time></li>`).join('')}</ul>`
       : `<div class="muted">Aucun arrosage ces trois dernières semaines.</div>`}`;
   } catch {}
 }
@@ -253,7 +269,7 @@ function taskRow(p) {
   const late = p.last_watered_at && p.days_left < 0;
   const sub = [p.room, late ? `<span class="late">${esc(nextText(p))}</span>` : p.last_watered_at ? `arrosée ${relPast(new Date(p.last_watered_at))}` : 'jamais arrosée'].filter(Boolean).join(' · ');
   return `<li class="task" data-id="${p.id}">
-    <span class="t-ico ${late ? 'late' : ''}">${icon('drop')}</span>
+    ${thumb(p)}
     <a class="t-body" href="#/plante/${p.id}"><div class="t-title">Arroser ${esc(p.name)}</div><div class="t-sub">${sub}</div></a>
     <button class="check" type="button" aria-label="Marquer ${esc(p.name)} comme arrosée">${icon('check')}</button>
   </li>`;
@@ -264,7 +280,6 @@ async function checkTask(btn) {
   const p = state.plants.find((x) => x.id === Number(li.dataset.id));
   btn.classList.add('on'); btn.disabled = true;
   li.classList.add('is-done');
-  li.querySelector('.t-ico').className = 't-ico done';
   try {
     await water(p);
     setTimeout(() => { if (currentRoute() === 'home') render(); }, 900);
@@ -311,7 +326,7 @@ function renderUpcoming() {
   const next = state.plants.filter((p) => p.days_left > 0 && p.days_left <= 7).sort((a, b) => a.days_left - b.days_left);
   el.innerHTML = `<div class="section-title"><h2>Cette semaine</h2><a href="#/calendrier">Calendrier</a></div>
     ${next.length ? `<ul class="tasks">${next.map((p) => `<li class="task">
-      <span class="t-ico">${icon('calendar')}</span>
+      ${thumb(p)}
       <a class="t-body" href="#/plante/${p.id}"><div class="t-title">Arroser ${esc(p.name)}</div><div class="t-sub">${esc(cap(fmtLong.format(addDays(new Date(), p.days_left))))}</div></a><span></span></li>`).join('')}</ul>`
       : `<div class="muted">Rien de prévu dans les 7 prochains jours.</div>`}`;
 }
@@ -493,7 +508,7 @@ function drawTab(p, metrics) {
           <button type="button" data-h="168" aria-pressed="${chartHours === 168}">7 jours</button>
         </div></div>
       ${metrics.length > 1 ? `<div class="metric-tabs">${metrics.map((m) => `<button type="button" data-m="${m}" aria-pressed="${m === chartMetric}">${icon(METRIC[m].icon)}${METRIC[m].label}</button>`).join('')}</div>` : ''}
-      <div id="chart"></div>
+      <div class="chart-layout"><div id="chart"></div><aside class="chart-facts" id="chart-facts" aria-live="polite"></aside></div>
     </section>` : `<section class="card data">
       <div class="ha-card none" style="align-items:flex-start"><div class="ha-ico">${icon('sensor')}</div>
         <div><b>Aucun capteur</b><span>Associez un capteur Home Assistant pour suivre l'humidité du sol, la lumière et la température de cette plante.</span>
@@ -549,7 +564,8 @@ function adviceText(a) {
 
 function metricTile(m, s) {
   let st = '', cls = 'ok';
-  if (s.status === 'offline' || s.status === 'missing') { st = 'Hors ligne'; cls = 'off'; }
+  if (s.status === 'unknown') { st = 'Indisponible'; cls = 'off'; }
+  else if (s.status === 'offline' || s.status === 'missing') { st = 'Hors ligne'; cls = 'off'; }
   else if (s.status === 'stale') { st = 'Pas à jour'; cls = 'off'; }
   else if (s.range === 'low') { st = m === 'illuminance' ? 'Faible sur 24 h' : 'Trop bas'; cls = 'low'; }
   else if (s.range === 'high') { st = 'Trop haut'; cls = 'high'; }
@@ -569,14 +585,66 @@ async function loadChart(p) {
     if (d.points.length < 2) { box.innerHTML = `<div class="chart-msg">Pas encore assez de mesures sur cette période.</div>`; return; }
     const t = p.effective_targets;
     const band = chartMetric === 'moisture' ? [t.moisture_min, t.moisture_max] : chartMetric === 'temperature' ? [t.temp_min, t.temp_max] : null;
-    drawChart(box, d.points, { metric: chartMetric, hours: chartHours, band });
+    const marks = (p.history || []).map((w) => new Date(w.at).getTime()).filter((t) => t >= d.points[0].t);
+    drawChart(box, d.points, { metric: chartMetric, hours: chartHours, band, marks });
+    const facts = $('#chart-facts');
+    if (facts) facts.innerHTML = chartFacts(p, chartMetric, d.points, chartHours);
   } catch (e) {
     box.innerHTML = `<div class="chart-msg">Historique indisponible : ${esc(e.message)}</div>`;
   }
 }
 
 // Graphique en aire, une seule série, avec plage cible et info-bulle
-function drawChart(box, pts, { metric, hours, band }) {
+// Ce que dit la courbe, en une phrase et quelques chiffres (calculés depuis les points affichés)
+function chartFacts(p, metric, pts, hours) {
+  const t = p.effective_targets;
+  const u = METRIC[metric].unit;
+  const cur = pts.at(-1).v;
+  const vals = pts.map((x) => x.v);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const span = hours > 48 ? 'sur 7 jours' : 'sur 24 h';
+  const fmtD = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric' });
+  let lead = '', rows = [];
+  if (metric === 'moisture') {
+    const lastW = p.last_watered_at ? new Date(p.last_watered_at).getTime() : null;
+    const after = lastW ? pts.filter((x) => x.t >= lastW) : [];
+    const peak = after.length ? Math.max(...after.map((x) => x.v)) : null;
+    // Pente sur les 48 dernières heures (ou toute la fenêtre si plus courte)
+    const from = pts.find((x) => x.t >= Date.now() - 48 * 3600e3) || pts[0];
+    const days = (pts.at(-1).t - from.t) / 86400e3;
+    const rate = days > 0.25 ? (cur - from.v) / days : 0;
+    rows.push(['Maintenant', `${fmtMetric('moisture', cur)} %`]);
+    if (peak != null) rows.push([`Après l'arrosage du ${fmtDM.format(new Date(lastW))}`, `${fmtMetric('moisture', peak)} %`]);
+    if (rate < -0.2) rows.push(['Le sol sèche de', `${fmtNum(-rate, 1)} pt / jour`]);
+    if (cur < t.moisture_min) lead = `Le sol est sous le seuil de ${t.moisture_min} % : arrosez dès maintenant.`;
+    else if (rate < -0.2) {
+      const dLeft = Math.max(0, (cur - t.moisture_min) / -rate);
+      const when = addDays(new Date(), Math.round(dLeft));
+      const planned = addDays(new Date(), Math.max(0, p.days_left));
+      const diff = daysBetween(planned, when);
+      lead = `Au rythme actuel, le sol atteindra ${t.moisture_min} % ${Math.round(dLeft) <= 0 ? "aujourd'hui" : Math.round(dLeft) === 1 ? 'demain' : `vers ${fmtD.format(when)}`}`
+        + (diff <= -2 ? `, avant l'arrosage prévu ${fmtD.format(planned)} : pensez à l'avancer.` : diff >= 3 ? `, bien après l'arrosage prévu : vous pouvez espacer.` : `, en phase avec le calendrier.`);
+    } else lead = `Humidité stable ${span}, dans la plage de ${t.moisture_min} à ${t.moisture_max} %.`;
+  } else if (metric === 'temperature') {
+    const out = pts.filter((x) => x.v < t.temp_min || x.v > t.temp_max).length / pts.length;
+    rows.push(['Maintenant', `${fmtMetric('temperature', cur)} °C`], ['Minimum', `${fmtMetric('temperature', min)} °C`], ['Maximum', `${fmtMetric('temperature', max)} °C`]);
+    lead = out === 0 ? `Toujours entre ${t.temp_min} et ${t.temp_max} °C ${span}.` : `Hors de la plage ${t.temp_min}–${t.temp_max} °C pendant ${Math.round(out * 100)} % du temps ${span}.`;
+  } else if (metric === 'illuminance') {
+    const byDay = new Map();
+    for (const x of pts) { const k = dayKey(new Date(x.t)); byDay.set(k, Math.max(byDay.get(k) || 0, x.v)); }
+    const peaks = [...byDay.values()];
+    const avgPeak = peaks.reduce((a, b) => a + b, 0) / peaks.length;
+    const low = peaks.filter((v) => v < t.lux_min).length;
+    rows.push(['Pic moyen par jour', `${fmtNum(Math.round(avgPeak))} lx`], ['Seuil pour cette plante', `${fmtNum(t.lux_min)} lx`]);
+    lead = low ? `${plural(low, 'journée', 'journées')} sous ${fmtNum(t.lux_min)} lx ${span} : rapprochez-la de la lumière.` : `Assez de lumière chaque jour ${span}.`;
+  } else {
+    rows.push(['Maintenant', `${fmtMetric(metric, cur)} %`], ['Minimum', `${fmtMetric(metric, min)} %`]);
+    lead = min < t.humidity_min ? `L'air est descendu à ${fmtMetric(metric, min)} %, sous les ${t.humidity_min} % conseillés.` : `Air assez humide ${span}.`;
+  }
+  return `<p class="facts-lead">${esc(lead)}</p><dl>${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`;
+}
+
+function drawChart(box, pts, { metric, hours, band, marks = [] }) {
   const W = Math.max(280, box.clientWidth || 320), H = 190;
   const m = { l: 36, r: 8, t: 26, b: 22 };
   const x0 = pts[0].t, x1 = Date.now();
@@ -615,10 +683,11 @@ function drawChart(box, pts, { metric, hours, band }) {
   box.innerHTML = `<div class="chart" role="img" aria-label="${esc(METRIC[metric].long)} sur ${hours > 48 ? '7 jours' : '24 heures'}">
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bandRect}${grid}${xl}
       <path class="area" d="${area}"/><path class="line" d="${line}"/>
+      ${marks.filter((t) => t >= x0 && t <= x1).map((t) => `<g class="wmark"><line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${m.t - 6}" y2="${H - m.b}"/><circle cx="${X(t).toFixed(1)}" cy="${m.t - 10}" r="4"/></g>`).join('')}
       <line class="cross" y1="${m.t}" y2="${H - m.b}" x1="-10" x2="-10" visibility="hidden"/>
       <circle class="pt" r="4.5" cx="-10" cy="-10" visibility="hidden"/></svg>
     <div class="tip" hidden></div></div>
-    ${band ? `<div class="chart-note"><i></i>Plage cible ${band[0]}–${band[1]} ${METRIC[metric].unit}</div>` : ''}`;
+    <div class="chart-note">${band ? `<span><i></i>Plage cible ${band[0]}–${band[1]} ${METRIC[metric].unit}</span>` : ''}${marks.some((t) => t >= x0) ? `<span><b class="wm"></b>Arrosage</span>` : ''}</div>`;
   const chart = $('.chart', box), svg = $('svg', chart), cross = $('.cross', svg), dot = $('.pt', svg), tip = $('.tip', chart);
   const fmtWhen = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   const move = (e) => {
@@ -733,6 +802,20 @@ async function renderCalendar() {
   drawDay(events);
 }
 
+function nextDays(events, fromKey) {
+  const out = [];
+  const start = new Date(fromKey + 'T00:00:00');
+  for (let i = 1; i <= 7; i++) {
+    const d = addDays(start, i);
+    const list = (events.get(dayKey(d)) || []).filter((e) => e.type !== 'done');
+    if (list.length) out.push({ d, list });
+  }
+  if (!out.length) return '';
+  return `<div class="next-days"><h3>Les 7 jours suivants</h3>
+    <ul>${out.map(({ d, list }) => `<li><span class="nd-day">${esc(cap(fmtShort.format(d).replace('.', '')))}</span>
+      <span class="nd-plants">${list.map((e) => `<a href="#/plante/${e.plant_id}" title="${esc(e.name)}">${thumb(plantById(e.plant_id), 'sm')}<span>${esc(e.name)}</span></a>`).join('')}</span></li>`).join('')}</ul></div>`;
+}
+
 function drawDay(events) {
   const el = $('#day-panel');
   const key = dayKey(calSelected);
@@ -743,11 +826,12 @@ function drawDay(events) {
       const canCheck = e.type !== 'done' && key === today;
       const sub = e.type === 'done' ? `Fait à ${fmtTime.format(e.at)}` : e.type === 'late' ? `<span class="late">${esc(nextText(e.plant))}</span>` : key < today ? 'Non réalisé' : 'Prévu';
       return `<li class="task ${e.type === 'done' ? 'is-done' : ''}" data-id="${e.plant_id}">
-        <span class="t-ico ${e.type === 'done' ? 'done' : e.type === 'late' ? 'late' : ''}">${icon(e.type === 'done' ? 'check' : 'drop')}</span>
+        ${thumb(plantById(e.plant_id))}
         <a class="t-body" href="#/plante/${e.plant_id}"><div class="t-title">Arroser ${esc(e.name)}</div><div class="t-sub">${[e.room ? esc(e.room) : '', sub].filter(Boolean).join(' · ')}</div></a>
         ${canCheck ? `<button class="check" type="button" aria-label="Marquer ${esc(e.name)} comme arrosée">${icon('check')}</button>` : '<span></span>'}
       </li>`;
-    }).join('')}</ul>` : `<div class="empty-line">${icon('calendar')}<span>Aucun soin ce jour-là.</span></div>`}`;
+    }).join('')}</ul>` : `<div class="empty-line">${icon('calendar')}<span>Aucun soin ce jour-là.</span></div>`}
+    ${nextDays(events, key)}`;
   $$('.check', el).forEach((b) => (b.onclick = async () => {
     const p = state.plants.find((x) => x.id === Number(b.closest('.task').dataset.id));
     b.classList.add('on'); b.disabled = true;
@@ -828,8 +912,8 @@ function sensorCard(s) {
   const bat = s.battery != null ? `<span class="bat ${s.battery <= 15 ? 'low' : ''}">${icon('battery')}${fmtNum(s.battery)} %</span>` : '';
   const color = { moisture: 'var(--teal)', temperature: 'var(--red)', illuminance: 'var(--orange)', humidity: 'var(--green-2)' }[s.metric];
   return `<a class="card sensor" href="#/plante/${s.plant_id}">
-    <div class="s-ico" style="color:${color}">${icon(M.icon)}</div>
-    <div style="min-width:0"><div class="s-name">${esc(s.name || s.entity_id)}</div>
+    ${thumb(plantById(s.plant_id))}
+    <div style="min-width:0"><div class="s-name"><span class="s-metric" style="color:${color}">${icon(M.icon)}</span>${esc(s.name || s.entity_id)}</div>
       <div class="s-sub">${esc(s.plant_name)}${s.room ? ` · ${esc(s.room)}` : ''} · ${esc(M.long)}</div>
       <div class="s-state">${status}${bat}</div></div>
     <div class="s-val"><b>${off ? '—' : fmtMetric(s.metric, s.value)}</b><small> ${off ? '' : esc(s.unit || M.unit)}</small><span>${esc(relAgo(s.updated_at))}</span></div>

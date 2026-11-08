@@ -268,6 +268,7 @@ function serializePlant(p, states) {
   // État global affiché en badge
   const alerts = [];
   for (const r of readings) {
+    if (r.status === 'unknown') continue; // Home Assistant injoignable : pas d'alerte inventée
     if (r.status === 'offline' || r.status === 'missing') alerts.push({ level: 'sensor', text: `Capteur ${METRICS[r.metric].label.toLowerCase()} hors ligne` });
     else if (r.status === 'stale') alerts.push({ level: 'sensor', text: `Pas de nouvelle mesure depuis plus de 12 h` });
     else if (r.range === 'low' && r.metric === 'moisture') alerts.push({ level: 'attention', text: `Sol trop sec (${r.value} %)` });
