@@ -43,6 +43,16 @@ Même chose sans `docker login` : `git pull && docker compose up -d --build`.
 
 Le HTTPS est obligatoire pour le service worker et les notifications.
 
+## Photos des plantes
+
+Chaque plante peut avoir :
+- **ta photo** : prise avec le téléphone ou importée ;
+- **une photo de référence de l'espèce**, à choisir dans le formulaire parmi les photos d'[iNaturalist](https://www.inaturalist.org) sous licence Creative Commons. Seules les licences CC0, BY, BY-SA, BY-NC et BY-NC-SA sont retenues, et l'auteur est toujours cité sur la fiche.
+
+Une plante créée sans photo reçoit automatiquement la première photo de référence de son espèce. Si tu modifies ensuite l'espèce, la recherche est relancée. Si tu retires la photo à la main, elle ne revient pas. Les photos sont téléchargées et stockées dans `data/photos`, donc l'appli fonctionne même si iNaturalist est indisponible.
+
+La recherche se fait sur le nom scientifique, ou à défaut sur le nom commun en français. Seuls les végétaux sont proposés : « Basilic » ne renvoie pas le lézard.
+
 ## Home Assistant
 
 1. Dans HA, va dans **Profil → Sécurité → Jetons d'accès longue durée → Créer un jeton**.
@@ -86,7 +96,7 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 ## Pare-feu
 
 - **Rosée → Home Assistant** : port 8123 en interne.
-- **Rosée → Internet en 443** : nécessaire pour les push (`fcm.googleapis.com`, `web.push.apple.com`, `updates.push.services.mozilla.com`).
+- **Rosée → Internet en 443** : nécessaire pour les push (`fcm.googleapis.com`, `web.push.apple.com`, `updates.push.services.mozilla.com`) et les photos de référence (`api.inaturalist.org`, `inaturalist-open-data.s3.amazonaws.com`, `static.inaturalist.org`).
 
 ## Variables d'environnement (`.env`)
 
@@ -96,6 +106,7 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 | `VAPID_SUBJECT` | — | Contact `mailto:` transmis aux services push |
 | `HA_URL` / `HA_TOKEN` | vides | Connexion à Home Assistant |
 | `FEED_BASE_URL` | vide | Adresse publique utilisée dans le lien d'agenda |
+| `PHOTO_LOOKUP` | `1` | `0` désactive l'attribution automatique d'une photo de référence |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | générées | Pour imposer tes propres clés |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | vides | Authentification HTTP. Le flux `/cal/` en est exempté : il est protégé par son jeton |
 | `PORT` / `DATA_DIR` | `3000` / `/data` | Port d'écoute et dossier des données |

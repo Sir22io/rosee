@@ -21,6 +21,10 @@ const AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
 const HA_URL = (process.env.HA_URL || '').replace(/\/+$/, '');
 const HA_TOKEN = process.env.HA_TOKEN || '';
 const FEED_BASE_URL = (process.env.FEED_BASE_URL || '').replace(/\/+$/, '');
+// Photos de référence (iNaturalist). PHOTO_LOOKUP=0 pour désactiver la recherche automatique.
+const INAT_API = (process.env.INAT_API_URL || 'https://api.inaturalist.org/v1').replace(/\/+$/, '');
+const PHOTO_LOOKUP = process.env.PHOTO_LOOKUP !== '0';
+const PHOTO_HOSTS = new Set(['inaturalist-open-data.s3.amazonaws.com', 'static.inaturalist.org', ...(process.env.INAT_PHOTO_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)]);
 
 fs.mkdirSync(PHOTO_DIR, { recursive: true });
 
@@ -60,6 +64,11 @@ db.exec(`
 const cols = db.prepare('PRAGMA table_info(plants)').all().map((c) => c.name);
 if (!cols.includes('sensors')) db.exec(`ALTER TABLE plants ADD COLUMN sensors TEXT NOT NULL DEFAULT '{}'`);
 if (!cols.includes('targets')) db.exec(`ALTER TABLE plants ADD COLUMN targets TEXT NOT NULL DEFAULT '{}'`);
+// photo_source : 'user' (photo perso), 'ref' (photo de référence choisie), 'auto' (trouvée automatiquement)
+if (!cols.includes('photo_source')) db.exec(`ALTER TABLE plants ADD COLUMN photo_source TEXT DEFAULT NULL`);
+if (!cols.includes('photo_credit')) db.exec(`ALTER TABLE plants ADD COLUMN photo_credit TEXT DEFAULT NULL`);
+// photo_lookup : 0 = recherche auto à faire, 1 = faite ou refusée par l'utilisateur
+if (!cols.includes('photo_lookup')) db.exec(`ALTER TABLE plants ADD COLUMN photo_lookup INTEGER NOT NULL DEFAULT 0`);
 
 const getSetting = (k, d) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value ?? d;
 const setSetting = (k, v) =>
@@ -247,6 +256,9 @@ function serializePlant(p, states) {
     notes: p.notes,
     created_at: p.created_at,
     photo_url: p.photo ? `/photos/${p.photo}` : null,
+    photo_source: p.photo ? p.photo_source || 'user' : null,
+    photo_credit: p.photo ? parseJSON(p.photo_credit, null) : null,
+    photo_pending: !p.photo && p.photo_lookup === 0 && PHOTO_LOOKUP,
     last_watered_at: last,
     days_since: daysSince,
     days_left: daysLeft, // <= 0 : à arroser aujourd'hui (négatif = en retard)
@@ -408,6 +420,124 @@ function removePhoto(name) {
   if (name) fs.rm(path.join(PHOTO_DIR, path.basename(name)), { force: true }, () => {});
 }
 
+// ---------- Photos de référence : iNaturalist ----------
+const OK_LICENSES = new Set(['cc0', 'cc-by', 'cc-by-sa', 'cc-by-nc', 'cc-by-nc-sa']);
+const sized = (url, size) => (url ? url.replace(/\/(square|thumb|small|medium|large|original)\.(jpe?g|png|webp)/i, `/${size}.$2`) : null);
+async function inatFetch(p) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(INAT_API + p, { headers: { 'User-Agent': 'Rosee/2 (appli auto-hebergee de suivi de plantes)', Accept: 'application/json' }, signal: ctrl.signal });
+    if (!res.ok) throw new Error(`iNaturalist a répondu ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function photoInfo(ph, taxon) {
+  if (!ph?.url || !OK_LICENSES.has(String(ph.license_code || '').toLowerCase())) return null;
+  return {
+    id: ph.id,
+    thumb: ph.square_url || sized(ph.url, 'square'),
+    preview: ph.medium_url || sized(ph.url, 'medium'),
+    url: ph.large_url || sized(ph.url, 'large') || ph.medium_url,
+    attribution: String(ph.attribution || '').slice(0, 200),
+    license: String(ph.license_code || '').toUpperCase(),
+    page: ph.id ? `https://www.inaturalist.org/photos/${ph.id}` : null,
+    taxon: taxon?.name || null,
+  };
+}
+// Taxons végétaux correspondant à une recherche (nom commun en français ou nom scientifique)
+async function searchTaxa(q) {
+  const r = await inatFetch(`/taxa?q=${encodeURIComponent(q)}&is_active=true&locale=fr&per_page=15`);
+  return (r.results || [])
+    .filter((t) => t.iconic_taxon_name === 'Plantae')
+    .slice(0, 5)
+    .map((t) => ({ id: t.id, name: t.name, common: t.preferred_common_name || null, rank: t.rank, default_photo: photoInfo(t.default_photo, t) }));
+}
+async function taxonPhotos(id) {
+  const r = await inatFetch(`/taxa/${Number(id)}?locale=fr`);
+  const t = r.results?.[0];
+  if (!t) return { taxon: null, photos: [] };
+  const photos = [];
+  const seen = new Set();
+  for (const tp of [{ photo: t.default_photo }, ...(t.taxon_photos || [])]) {
+    const info = photoInfo(tp.photo, t);
+    if (info && !seen.has(info.id)) { seen.add(info.id); photos.push(info); }
+    if (photos.length >= 12) break;
+  }
+  return { taxon: { id: t.id, name: t.name, common: t.preferred_common_name || null }, photos };
+}
+// Télécharge une photo de référence (hôtes autorisés uniquement) et la stocke localement
+async function saveRemotePhoto(url) {
+  let u;
+  try { u = new URL(url); } catch { throw new Error('Adresse de photo invalide'); }
+  if (!PHOTO_HOSTS.has(u.hostname) || !['https:', 'http:'].includes(u.protocol) || (u.protocol === 'http:' && !process.env.INAT_PHOTO_HOSTS)) {
+    throw new Error('Source de photo non autorisée');
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(u, { signal: ctrl.signal, redirect: 'error' });
+    if (!res.ok) throw new Error(`Téléchargement impossible (${res.status})`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 15 * 1024 * 1024) throw new Error('Photo trop lourde');
+    return await savePhoto({ buffer: buf });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function refCredit(body) {
+  const c = {
+    attribution: String(body.ref_photo_attribution || '').slice(0, 200),
+    license: String(body.ref_photo_license || '').slice(0, 20),
+    page: /^https:\/\/www\.inaturalist\.org\/photos\/\d+$/.test(body.ref_photo_page || '') ? body.ref_photo_page : null,
+    source: 'iNaturalist',
+  };
+  return JSON.stringify(c);
+}
+
+// Recherche automatique d'une photo pour les plantes qui n'en ont pas (une à la fois, ~1 requête/s)
+let lookupRunning = false, lookupAgain = false;
+async function runPhotoLookups() {
+  if (!PHOTO_LOOKUP) return;
+  if (lookupRunning) { lookupAgain = true; return; }
+  lookupRunning = true;
+  lookupAgain = false;
+  try {
+    const rows = db.prepare('SELECT * FROM plants WHERE photo IS NULL AND photo_lookup = 0 ORDER BY id').all();
+    for (const p of rows) {
+      const q = p.species || p.name;
+      try {
+        const taxa = await searchTaxa(q);
+        const pick = taxa.find((t) => t.default_photo);
+        let saved = null, credit = null;
+        if (pick) {
+          saved = await saveRemotePhoto(pick.default_photo.url);
+          credit = JSON.stringify({ attribution: pick.default_photo.attribution, license: pick.default_photo.license, page: pick.default_photo.page, source: 'iNaturalist', taxon: pick.name });
+        }
+        // La plante a pu changer pendant le téléchargement : on n'écrase jamais une photo choisie entre-temps
+        if (saved) {
+          const r = db.prepare("UPDATE plants SET photo=@photo, photo_source='auto', photo_credit=@credit, photo_lookup=1 WHERE id=@id AND photo IS NULL AND photo_lookup=0").run({ id: p.id, photo: saved, credit });
+          if (!r.changes) removePhoto(saved);
+        } else {
+          db.prepare('UPDATE plants SET photo_lookup=1 WHERE id=? AND photo_lookup=0').run(p.id);
+        }
+        console.log(`[rosee] photo de référence ${saved ? 'trouvée' : 'introuvable'} pour « ${p.name} » (${q})`);
+      } catch (e) {
+        console.error(`[rosee] recherche de photo impossible pour « ${p.name} » :`, e.message);
+        break; // réseau indisponible : on réessaiera plus tard
+      }
+      await new Promise((r) => setTimeout(r, 1100));
+    }
+  } finally {
+    lookupRunning = false;
+  }
+  if (lookupAgain) runPhotoLookups(); // des plantes ajoutées pendant la recherche
+}
+setTimeout(runPhotoLookups, 5000);
+setInterval(runPhotoLookups, 6 * 3600 * 1000);
+
 const ENTITY_RE = /^sensor\.[a-z0-9_]+$/;
 function plantFields(body) {
   const name = String(body.name || '').trim().slice(0, 80);
@@ -451,10 +581,16 @@ app.get('/api/plants/:id', wrap(async (req, res) => {
 app.post('/api/plants', upload.single('photo'), wrap(async (req, res) => {
   const f = plantFields(req.body);
   if (!f.name) return res.status(400).json({ error: 'Le nom est obligatoire' });
-  const photo = await savePhoto(req.file);
+  let photo = null, photo_source = null, photo_credit = null, photo_lookup = 0;
+  if (req.file) { photo = await savePhoto(req.file); photo_source = 'user'; photo_lookup = 1; }
+  else if (req.body.ref_photo_url) {
+    photo = await saveRemotePhoto(req.body.ref_photo_url).catch((e) => { throw Object.assign(e, { status: 400 }); });
+    photo_source = 'ref'; photo_credit = refCredit(req.body); photo_lookup = 1;
+  }
   const info = db
-    .prepare('INSERT INTO plants(name,species,room,light,interval_days,notes,photo,sensors,targets) VALUES(@name,@species,@room,@light,@interval_days,@notes,@photo,@sensors,@targets)')
-    .run({ ...f, photo });
+    .prepare('INSERT INTO plants(name,species,room,light,interval_days,notes,photo,sensors,targets,photo_source,photo_credit,photo_lookup) VALUES(@name,@species,@room,@light,@interval_days,@notes,@photo,@sensors,@targets,@photo_source,@photo_credit,@photo_lookup)')
+    .run({ ...f, photo, photo_source, photo_credit, photo_lookup });
+  if (!photo) runPhotoLookups();
   if (req.body.watered_today === '1') db.prepare('INSERT INTO waterings(plant_id, at) VALUES(?,?)').run(info.lastInsertRowid, new Date().toISOString());
   res.status(201).json(serializePlant(getPlantRow(info.lastInsertRowid), await loadStates([])));
 }));
@@ -464,16 +600,23 @@ app.put('/api/plants/:id', upload.single('photo'), wrap(async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Plante introuvable' });
   const f = plantFields(req.body);
   if (!f.name) return res.status(400).json({ error: 'Le nom est obligatoire' });
-  let photo = existing.photo;
+  let photo = existing.photo, photo_source = existing.photo_source, photo_credit = existing.photo_credit, photo_lookup = existing.photo_lookup;
   if (req.file) {
-    photo = await savePhoto(req.file);
-    removePhoto(existing.photo);
+    photo = await savePhoto(req.file); photo_source = 'user'; photo_credit = null; photo_lookup = 1;
+  } else if (req.body.ref_photo_url) {
+    photo = await saveRemotePhoto(req.body.ref_photo_url).catch((e) => { throw Object.assign(e, { status: 400 }); });
+    photo_source = 'ref'; photo_credit = refCredit(req.body); photo_lookup = 1;
   } else if (req.body.remove_photo === '1') {
-    removePhoto(existing.photo);
-    photo = null;
+    // Choix explicite de ne pas avoir de photo : plus de recherche automatique
+    photo = null; photo_source = 'none'; photo_credit = null; photo_lookup = 1;
+  } else if ((f.species !== existing.species || f.name !== existing.name) && (existing.photo_source === 'auto' || (!existing.photo && existing.photo_source !== 'none'))) {
+    // Photo automatique (ou aucune trouvée) et espèce/nom modifiés : nouvelle recherche
+    photo = null; photo_source = null; photo_credit = null; photo_lookup = 0;
   }
-  db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets WHERE id=@id')
-    .run({ ...f, photo, id: existing.id });
+  if (photo !== existing.photo) removePhoto(existing.photo);
+  db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets,photo_source=@photo_source,photo_credit=@photo_credit,photo_lookup=@photo_lookup WHERE id=@id')
+    .run({ ...f, photo, photo_source, photo_credit, photo_lookup, id: existing.id });
+  if (!photo && photo_lookup === 0) runPhotoLookups();
   res.json(serializePlant(getPlantRow(existing.id), await loadStates([])));
 }));
 
@@ -587,6 +730,21 @@ app.get('/api/plants/:id/history', wrap(async (req, res) => {
   res.json({ metric, entity, unit: METRICS[metric]?.unit || '', points: series });
 }));
 
+// ---------- Photos de référence ----------
+app.get('/api/photo-search', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 100);
+  const taxonId = parseInt(req.query.taxon_id, 10);
+  try {
+    if (taxonId) return res.json({ taxa: [], ...(await taxonPhotos(taxonId)) });
+    if (q.length < 2) return res.status(400).json({ error: 'Indiquez un nom ou une espèce' });
+    const taxa = await searchTaxa(q);
+    if (!taxa.length) return res.json({ taxa: [], taxon: null, photos: [] });
+    res.json({ taxa, ...(await taxonPhotos(taxa[0].id)) });
+  } catch (e) {
+    res.status(502).json({ error: e.name === 'AbortError' ? 'iNaturalist ne répond pas' : `Recherche impossible : ${e.message}` });
+  }
+}));
+
 // ---------- Réglages ----------
 app.get('/api/settings', (_req, res) =>
   res.json({
@@ -635,6 +793,7 @@ app.post('/api/push/test', wrap(async (_req, res) => {
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.use((err, _req, res, _next) => {
+  if (err.status === 400) return res.status(400).json({ error: err.message });
   console.error(err);
   res.status(500).json({ error: 'Erreur serveur' });
 });

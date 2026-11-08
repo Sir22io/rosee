@@ -95,6 +95,12 @@ const METRIC = {
 };
 const fmtMetric = (m, v) => (v == null ? '—' : m === 'illuminance' ? fmtNum(Math.round(v)) : m === 'temperature' ? fmtNum(v, 1) : fmtNum(Math.round(v)));
 
+function creditText(c) {
+  if (!c) return '';
+  const who = String(c.attribution || '').replace(/^\(c\)\s*/i, '').replace(/,?\s*(some|no) rights reserved.*$/i, '').trim();
+  return `Photo : ${who || 'iNaturalist'}${c.license ? ` · ${c.license.toUpperCase().replace(/^CC-?/, 'CC ')}` : ''} · iNaturalist`;
+}
+
 function media(p) {
   return p.photo_url
     ? `<img src="${esc(p.photo_url)}" alt="" loading="lazy" decoding="async">`
@@ -379,7 +385,8 @@ async function renderDetail(id) {
     <div class="d-wrap">
       <div class="d-left">
         <div class="d-hero">
-          <div class="media">${media(p)}</div>
+          <div class="media">${media(p)}${p.photo_pending ? `<span class="photo-pending">Recherche d'une photo…</span>` : ''}</div>
+          ${p.photo_credit ? `<a class="photo-credit" ${p.photo_credit.page ? `href="${esc(p.photo_credit.page)}" target="_blank" rel="noopener"` : ''}>${esc(creditText(p.photo_credit))}</a>` : ''}
           <div class="bar">
             <button class="icon-btn float" type="button" id="back" aria-label="Retour">${icon('back')}</button>
             <div class="right"><button class="icon-btn float" type="button" id="edit" aria-label="Modifier">${icon('edit')}</button></div>
@@ -421,6 +428,9 @@ async function renderDetail(id) {
     </div>
   `;
 
+  if (p.photo_pending && (renderDetail.tries = (renderDetail.tries || 0) + 1) <= 4) {
+    setTimeout(async () => { if (location.hash === `#/plante/${id}`) { await loadPlants(); renderDetail(id); } }, 2500);
+  } else if (!p.photo_pending) renderDetail.tries = 0;
   $('#back').onclick = () => (history.length > 1 ? history.back() : (location.hash = '#/plantes'));
   $('#edit').onclick = () => openPlantForm(p);
   $('#more').onclick = () => openActions(p);
@@ -940,17 +950,33 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
       <div class="progress" aria-hidden="true"><i id="prog"></i></div>
       <div class="sheet-body" id="form-body">
         <div class="form-section">
-          <h3>${icon('camera')}Nom et photo</h3>
-          <label class="photo-pick ${p?.photo_url ? 'has-photo' : ''}" id="pick" style="margin-top:12px">
-            ${p?.photo_url ? `<img src="${esc(p.photo_url)}" alt="">` : ''}
-            <span class="pick-label">${icon('camera')}<span>${p?.photo_url ? 'Changer la photo' : 'Prendre ou choisir une photo'}</span></span>
-            <input type="file" name="photo" accept="image/*" aria-label="Photo de la plante">
-          </label>
-          ${p?.photo_url ? `<button type="button" class="remove-photo" id="rm-photo">Retirer la photo</button>` : ''}
-          <input type="hidden" name="remove_photo" value="0">
+          <h3>${icon('plants')}Nom et espèce</h3>
           <div class="two">
             <label class="field"><span>Nom</span><input class="input" name="name" required maxlength="80" placeholder="Monstera du salon" value="${esc(p?.name || '')}"></label>
             <label class="field"><span>Espèce</span><input class="input" name="species" maxlength="120" placeholder="Monstera deliciosa" value="${esc(p?.species || '')}"></label>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h3>${icon('camera')}Photo</h3>
+          <label class="photo-pick ${p?.photo_url ? 'has-photo' : ''}" id="pick" style="margin-top:12px">
+            ${p?.photo_url ? `<img src="${esc(p.photo_url)}" alt="">` : ''}
+            <span class="pick-label">${icon('camera')}<span>${p?.photo_url ? 'Mettre ma photo' : 'Prendre ou choisir ma photo'}</span></span>
+            <input type="file" name="photo" accept="image/*" aria-label="Ma photo de la plante">
+          </label>
+          <div class="photo-meta">
+            <span class="credit" id="pick-credit">${p?.photo_credit ? esc(creditText(p.photo_credit)) : ''}</span>
+            ${p?.photo_url ? `<button type="button" class="remove-photo" id="rm-photo">Retirer la photo</button>` : ''}
+          </div>
+          <input type="hidden" name="remove_photo" value="0">
+          <input type="hidden" name="ref_photo_url"><input type="hidden" name="ref_photo_attribution">
+          <input type="hidden" name="ref_photo_license"><input type="hidden" name="ref_photo_page">
+
+          <div class="refs">
+            <div class="refs-head"><b>Photos de l'espèce</b><button type="button" class="link-btn" id="ref-search">${icon('search')}Rechercher</button></div>
+            <div class="refs-taxa" id="ref-taxa"></div>
+            <div class="refs-strip" id="ref-strip" role="listbox" aria-label="Photos de référence"><span class="refs-msg">${p?.name || p?.species ? 'Recherche…' : 'Saisissez un nom ou une espèce pour voir des photos.'}</span></div>
+            <small class="muted">Photos iNaturalist sous licence Creative Commons, auteur cité.${editing ? '' : ' Sans choix de votre part, la première est utilisée.'}</small>
           </div>
         </div>
 
@@ -1025,27 +1051,81 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
     progress();
 
     const fileInput = form.elements.photo;
+    const pick = $('#pick', root);
+    const creditEl = $('#pick-credit', root);
+    const setRef = (ph) => {
+      form.elements.ref_photo_url.value = ph?.url || '';
+      form.elements.ref_photo_attribution.value = ph?.attribution || '';
+      form.elements.ref_photo_license.value = ph?.license || '';
+      form.elements.ref_photo_page.value = ph?.page || '';
+    };
+    const showPreview = (src) => {
+      pick.querySelector('img')?.remove();
+      if (src) { const img = new Image(); img.alt = ''; img.src = src; pick.prepend(img); }
+      pick.classList.toggle('has-photo', !!src);
+      pick.querySelector('.pick-label span').textContent = src ? 'Mettre ma photo' : 'Prendre ou choisir ma photo';
+      progress();
+    };
+    const unselectRefs = () => $$('#ref-strip button', root).forEach((x) => x.setAttribute('aria-selected', 'false'));
+
     fileInput.onchange = () => {
       const f = fileInput.files[0];
       if (!f) return;
-      const pick = $('#pick', root);
-      pick.classList.add('has-photo');
-      pick.querySelector('img')?.remove();
-      const img = new Image(); img.alt = ''; img.src = URL.createObjectURL(f);
-      pick.prepend(img);
-      pick.querySelector('.pick-label span').textContent = 'Changer la photo';
+      setRef(null); unselectRefs();
+      showPreview(URL.createObjectURL(f));
+      creditEl.textContent = '';
       form.elements.remove_photo.value = '0';
     };
     $('#rm-photo', root)?.addEventListener('click', (e) => {
       form.elements.remove_photo.value = '1';
-      fileInput.value = '';
-      const pick = $('#pick', root);
-      pick.classList.remove('has-photo');
-      pick.querySelector('img')?.remove();
-      pick.querySelector('.pick-label span').textContent = 'Prendre ou choisir une photo';
+      fileInput.value = ''; setRef(null); unselectRefs();
+      showPreview(null);
+      creditEl.textContent = '';
       e.currentTarget.remove();
-      progress();
     });
+
+    // Photos de référence (iNaturalist)
+    let lastQuery = null, photos = [];
+    const strip = $('#ref-strip', root), taxaEl = $('#ref-taxa', root);
+    const loadRefs = async ({ q, taxonId } = {}) => {
+      const query = q ?? (form.elements.species.value.trim() || form.elements.name.value.trim());
+      if (!taxonId) {
+        if (query.length < 2) { strip.innerHTML = `<span class="refs-msg">Saisissez un nom ou une espèce pour voir des photos.</span>`; taxaEl.innerHTML = ''; lastQuery = null; return; }
+        if (query === lastQuery) return;
+        lastQuery = query;
+      }
+      strip.innerHTML = `<span class="refs-msg">Recherche…</span>`;
+      try {
+        const r = await api(`/api/photo-search?${taxonId ? `taxon_id=${taxonId}` : `q=${encodeURIComponent(query)}`}`);
+        if (r.taxa?.length) {
+          taxaEl.innerHTML = r.taxa.map((t, i) => `<button type="button" class="chip" data-taxon="${t.id}" data-name="${esc(t.name)}" aria-pressed="${i === 0}">${t.common ? `${esc(cap(t.common))} · ` : ''}<i>${esc(t.name)}</i></button>`).join('');
+          $$('[data-taxon]', taxaEl).forEach((b) => (b.onclick = () => {
+            $$('[data-taxon]', taxaEl).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+            loadRefs({ taxonId: b.dataset.taxon });
+          }));
+        } else if (!taxonId) taxaEl.innerHTML = '';
+        photos = r.photos || [];
+        if (!photos.length) { strip.innerHTML = `<span class="refs-msg">Aucune photo libre trouvée${query && !taxonId ? ` pour « ${esc(query)} »` : ''}. Essayez le nom scientifique.</span>`; return; }
+        strip.innerHTML = photos.map((ph, i) => `<button type="button" role="option" aria-selected="${form.elements.ref_photo_url.value === ph.url}" data-i="${i}" title="${esc(ph.attribution)}"><img src="${esc(ph.thumb)}" alt="Photo ${i + 1} de ${esc(ph.taxon || '')}" loading="lazy"></button>`).join('');
+        $$('button', strip).forEach((b) => (b.onclick = () => {
+          const ph = photos[Number(b.dataset.i)];
+          fileInput.value = '';
+          setRef(ph);
+          form.elements.remove_photo.value = '0';
+          showPreview(ph.preview);
+          creditEl.textContent = creditText(ph);
+          unselectRefs(); b.setAttribute('aria-selected', 'true');
+          if (!form.elements.species.value.trim() && ph.taxon) { form.elements.species.value = ph.taxon; lastQuery = ph.taxon; progress(); }
+        }));
+      } catch (err) {
+        strip.innerHTML = `<span class="refs-msg">${esc(err.message)}</span>`;
+        lastQuery = null;
+      }
+    };
+    $('#ref-search', root).onclick = () => { lastQuery = null; loadRefs(); };
+    let refTimer;
+    for (const n of ['name', 'species']) form.elements[n].addEventListener('change', () => { clearTimeout(refTimer); refTimer = setTimeout(() => loadRefs(), 300); });
+    if (form.elements.name.value.trim() || form.elements.species.value.trim()) loadRefs();
 
     form.onsubmit = async (e) => {
       e.preventDefault();
@@ -1055,6 +1135,7 @@ async function openPlantForm(p = null, { focusSensors = false } = {}) {
       try {
         const fd = new FormData(form);
         if (!fileInput.files.length) fd.delete('photo');
+        if (!fd.get('ref_photo_url')) ['ref_photo_url', 'ref_photo_attribution', 'ref_photo_license', 'ref_photo_page'].forEach((k) => fd.delete(k));
         const saved = await api(editing ? `/api/plants/${p.id}` : '/api/plants', { method: editing ? 'PUT' : 'POST', body: fd });
         await loadPlants();
         sheet.close();
