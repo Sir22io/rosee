@@ -30,7 +30,7 @@ test('les pages et scripts sont servis, avec les en-têtes de sécurité', async
   assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
   assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(r.headers.get('x-frame-options'), 'DENY');
-  for (const f of ['/app.js', '/app.css', '/sw.js', '/theme.js', '/manifest.webmanifest', '/fonts/manrope.woff2']) {
+  for (const f of ['/app.js', '/app.css', '/sw.js', '/theme.js', '/manifest.webmanifest', '/fonts/manrope.woff2', '/confidentialite.html']) {
     assert.equal((await app.req(f)).status, 200, f);
   }
 });

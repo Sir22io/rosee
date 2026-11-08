@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rosée · Confidentialité</title>
+  <link rel="stylesheet" href="/app.css">
+  <style>
+    body { background: var(--bg); }
+    main { max-width: 720px; margin: 0 auto; padding: 40px 20px 60px; line-height: 1.6; }
+    h1 { font-size: 28px; margin: 0 0 6px; }
+    h2 { font-size: 18px; margin: 28px 0 6px; }
+    p, li { color: var(--ink-2); font-size: 15px; }
+    a { color: var(--green); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Règles de confidentialité</h1>
+    <p>Rosée est une application personnelle et auto-hébergée de suivi des plantes d’intérieur. Elle n’est pas un service commercial : elle tourne sur le serveur de son propriétaire et n’est accessible qu’aux comptes qu’il a autorisés.</p>
+
+    <h2>Données utilisées</h2>
+    <ul>
+      <li><b>Compte Google</b> : adresse e-mail, nom et photo de profil, pour vous identifier et indiquer qui a arrosé une plante.</li>
+      <li><b>Google Agenda</b> : uniquement l’agenda « Rosée » que l’application crée elle-même (portée <code>calendar.app.created</code>). Rosée n’a accès ni à vos autres agendas ni à vos rendez-vous.</li>
+      <li><b>Données de l’application</b> : plantes, photos, arrosages et soins que vous saisissez.</li>
+    </ul>
+
+    <h2>Stockage et partage</h2>
+    <p>Toutes les données restent sur le serveur personnel qui héberge Rosée. Le jeton d’accès Google y est chiffré. Aucune donnée n’est vendue, transmise à des tiers ni utilisée à des fins publicitaires ou d’entraînement de modèles. L’utilisation des données reçues des API Google respecte les <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">règles relatives aux données utilisateur des services d’API Google</a>, y compris les exigences d’utilisation limitée.</p>
+
+    <h2>Suppression</h2>
+    <p>Dans Paramètres → Agenda, « Déconnecter » révoque l’accès Google et peut supprimer l’agenda « Rosée ». Vous pouvez aussi retirer l’accès à tout moment depuis <a href="https://myaccount.google.com/permissions" rel="noopener">votre compte Google</a>. Sur simple demande à l’administrateur, votre compte et vos données sont effacés.</p>
+
+    <p style="margin-top:32px"><a href="/">Retour à Rosée</a></p>
+  </main>
+</body>
+</html>
