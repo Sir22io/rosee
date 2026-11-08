@@ -65,6 +65,14 @@ Le HTTPS est obligatoire pour le service worker et les notifications.
 - Les plantes signalées par un capteur font l'objet d'une notification « À surveiller » à part.
 - Les autres soins du jour (engrais, rempotage, taille, rotation) font l'objet d'une notification « Soins » à part, sans bouton : ils demandent de regarder la plante.
 
+## Mode vacances
+
+**Paramètres → Absence → Prévoir** : dates de départ et de retour, prénom de la personne qui arrose, un mot pour elle (clé, arrosoir…).
+- Pendant l'absence, les rappels quotidiens sont en pause. L'accueil affiche un bandeau, avec le nombre d'arrosages faits.
+- Rosée génère un lien secret `/garde/<jeton>` à envoyer (bouton « Envoyer le lien »). La page ne demande aucun compte. Elle montre les plantes à arroser ce jour-là, leur photo, la quantité d'eau et un bouton « Arrosée ». Les arrosages s'enregistrent comme les vôtres, « par Marie ». Une notification peut vous prévenir à chaque arrosage.
+- Le lien ne donne accès qu'à cette page. Il expire deux jours après le retour. « Nouveau lien » le remplace et « Je suis rentré » le coupe.
+- ⚠️ Le téléphone de la personne doit pouvoir joindre Rosée. Sur votre Wi-Fi, l'adresse habituelle suffit. Depuis l'extérieur, il faut exposer **uniquement** ces chemins, comme pour le flux .ics : un Proxy Host sans Access List, avec `if ($request_uri !~ ^/(garde/|garde-api$|garde-photo/|garde\.js$|app\.css$|theme\.js$|icons/|fonts/)) { return 404; }`, et `SITTER_BASE_URL=https://<cette-adresse>` pour que le lien généré l'utilise.
+
 ## Repères d'entretien et saisons
 
 - **Repères par espèce** (`care.js`) : la base couvre une cinquantaine de plantes d'intérieur et d'aromatiques. Elle donne le rythme d'arrosage en été et en hiver, la lumière, la température et l'humidité, avec quelques conseils. La correspondance se fait sur l'espèce, puis sur le genre, puis sur le nom commun. Les repères sont proposés dans le formulaire (appliqués d'office pour une nouvelle plante) et affichés sur la fiche. Ils servent aussi de seuils par défaut pour les alertes des capteurs.
@@ -107,7 +115,7 @@ Rosée ne fait que **lire** l'API REST de HA (`/api/states`, `/api/history`). Le
 
 La connexion Google est **facultative**. Sans configuration, l'appli reste ouverte, comme avant. Une fois activée :
 - la **serre est partagée** : tous les comptes listés dans `ALLOWED_EMAILS` voient les mêmes plantes, et l'historique indique qui a arrosé ;
-- chacun peut **connecter son Google Agenda** : Rosée y crée un agenda « Rosée — arrosages » et le tient à jour, avec un événement par arrosage prévu. Le rythme saisonnier est pris en compte, et un arrosage fait est marqué « ✓ » ;
+- chacun peut **connecter son Google Agenda** : Rosée y crée un agenda « Rosée » et le tient à jour, avec un événement par arrosage prévu. Le rythme saisonnier est pris en compte, et un arrosage fait est marqué « ✓ » ;
 - dans **Paramètres → Agenda**, chacun règle l'heure, la durée, les alertes (au moment même, 10 min, 30 min, 1 h, 2 h, 3 h ou la veille, jusqu'à 5) et leur type (notification ou e-mail) ;
 - Rosée ne demande que la portée `calendar.app.created` : elle accède aux seuls agendas qu'elle a créés, **pas à tes rendez-vous**. Le jeton Google est chiffré dans la base (AES-256-GCM) ;
 - tout passe par des connexions **sortantes**, sans rien exposer sur Internet. Rosée a besoin d'un accès en 443 vers `accounts.google.com`, `oauth2.googleapis.com` et `www.googleapis.com`.
@@ -210,4 +218,5 @@ Sauvegarde tout le dossier `data/` (`rosee.db`, `photos/`, `vapid.json`, `secret
 | `POST /api/plants/:id/care/:type` | Soin effectué (`engrais`, `rempotage`, `taille`, `rotation`) ; `{ "action": "skip" }` = rempotage pas nécessaire cette année |
 | `DELETE /api/care-log/:id` | Annuler un soin enregistré |
 | `GET /api/care-log?from=&to=` | Soins réalisés sur une période |
+| `GET/PUT/DELETE /api/vacation`, `POST /api/vacation/rotate` | Absence : dates, lien de la personne qui arrose |
 | `POST /api/push/test` | Envoie la notification du jour |

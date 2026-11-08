@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <title>Rosée · Plantes à garder</title>
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/theme.js"></script>
+  <style>
+    body { background: var(--bg); }
+    .g-wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px calc(40px + env(safe-area-inset-bottom)); }
+    .g-head { display: flex; gap: 14px; align-items: center; margin-bottom: 18px; }
+    .g-head img { width: 52px; height: 52px; }
+    .g-head h1 { font-size: 24px; margin: 0; letter-spacing: -.01em; }
+    .g-head p { margin: 2px 0 0; color: var(--ink-2); font-size: 14px; }
+    .g-note { background: var(--green-soft); color: var(--green-deep); border-radius: 16px; padding: 12px 14px; font-size: 14px; line-height: 1.5; margin-bottom: 16px; white-space: pre-line; }
+    .g-sum { display: flex; gap: 10px; margin-bottom: 18px; }
+    .g-sum div { flex: 1; background: var(--card); border: 1px solid var(--line-soft); border-radius: 16px; padding: 12px 14px; }
+    .g-sum b { display: block; font-size: 24px; line-height: 1.1; }
+    .g-sum span { font-size: 12.5px; color: var(--ink-2); }
+    .g-sec { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); margin: 22px 4px 10px; }
+    .g-list { display: grid; gap: 12px; list-style: none; margin: 0; padding: 0; }
+    .g-plant { background: var(--card); border: 1px solid var(--line-soft); border-radius: 20px; padding: 14px; display: grid; grid-template-columns: 72px 1fr; gap: 14px; }
+    .g-plant.done { opacity: .72; }
+    .g-ph { width: 72px; height: 72px; border-radius: 16px; object-fit: cover; background: var(--green-soft); display: grid; place-items: center; color: var(--green); }
+    .g-ph svg { font-size: 30px; }
+    .g-plant h2 { font-size: 17px; margin: 0; }
+    .g-room { font-size: 13px; color: var(--ink-2); }
+    .g-how { margin: 8px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--ink); }
+    .g-how b { color: var(--teal-ink); }
+    .g-more { margin-top: 6px; font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+    .g-more summary { cursor: pointer; color: var(--green); font-weight: 700; list-style: none; }
+    .g-more summary::-webkit-details-marker { display: none; }
+    .g-act { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+    .g-when { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+    .g-when.due { color: var(--orange-ink); }
+    .g-when.ok { color: var(--green-deep); }
+    .g-empty { text-align: center; color: var(--ink-2); padding: 40px 10px; }
+    .g-foot { text-align: center; color: var(--ink-3); font-size: 12px; margin-top: 28px; }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-drop" viewBox="0 0 24 24"><path d="M12 3.5C9.8 6.3 6.3 10.8 6.3 14.4a5.7 5.7 0 0 0 11.4 0c0-3.6-3.5-8.1-5.7-10.9Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5.5 12.5 4.2 4.2 8.8-9.4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-plants" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14V9"/><path d="M12 10c0-3.5-2.5-5.5-6-5.5 0 3.5 2.5 5.5 6 5.5Z"/><path d="M12 9c0-3 2.2-5 5.5-5 0 3-2.2 5-5.5 5Z"/><path d="M6.5 14h11l-1.3 6a1.3 1.3 0 0 1-1.3 1H9.1a1.3 1.3 0 0 1-1.3-1z"/></g></symbol>
+    </defs>
+  </svg>
+  <main class="g-wrap" id="app" aria-live="polite">
+    <p class="g-empty">Chargement…</p>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/garde.js"></script>
+</body>
+</html>

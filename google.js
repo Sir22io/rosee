@@ -239,12 +239,19 @@ export function setupGoogle(app, ctx) {
     if (!res.ok) throw Object.assign(new Error(data.error?.message || `Google Agenda a répondu ${res.status}`), { status: res.status });
     return data;
   }
+  const CAL_NAME = 'Rosée';
+  const CAL_DESC = 'Arrosages et soins prévus par Rosée. Agenda géré automatiquement.';
   async function ensureCalendar(user) {
     if (user.calendar_id) {
-      try { await gcal(user, 'GET', `/calendars/${encodeURIComponent(user.calendar_id)}`); return user.calendar_id; }
+      try {
+        const cal = await gcal(user, 'GET', `/calendars/${encodeURIComponent(user.calendar_id)}`);
+        // Ancien nom (avant les autres soins) : renommé une fois
+        if (cal?.summary === 'Rosée — arrosages') await gcal(user, 'PATCH', `/calendars/${encodeURIComponent(user.calendar_id)}`, { summary: CAL_NAME, description: CAL_DESC }).catch(() => {});
+        return user.calendar_id;
+      }
       catch (e) { if (e.status !== 404 && e.status !== 410) throw e; }
     }
-    const cal = await gcal(user, 'POST', '/calendars', { summary: 'Rosée — arrosages', description: 'Arrosages prévus par Rosée. Agenda géré automatiquement.', timeZone: TZ });
+    const cal = await gcal(user, 'POST', '/calendars', { summary: CAL_NAME, description: CAL_DESC, timeZone: TZ });
     db.prepare('UPDATE users SET calendar_id=? WHERE id=?').run(cal.id, user.id);
     db.prepare('DELETE FROM cal_events WHERE user_id=?').run(user.id);
     return cal.id;

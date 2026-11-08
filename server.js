@@ -446,6 +446,19 @@ async function sendReminders(onlyIds) {
 const getSnoozes = () => parseJSON(getSetting('snoozes', '[]'), []);
 function addSnooze(ids, ms) { setSetting('snoozes', JSON.stringify([...getSnoozes(), { at: Date.now() + ms, ids }].slice(-50))); }
 
+// ---------- Mode vacances ----------
+// { from, to, name, note, token, notify } : rappels en pause entre from et to, lien pour la personne qui arrose.
+const getVacation = () => parseJSON(getSetting('vacation', 'null'), null);
+const vacationActive = (v = getVacation(), today = localDateKey()) => !!v && v.from <= today && today <= v.to;
+// Le lien reste valable deux jours après le retour, le temps de ranger
+function readSitterToken(token) {
+  const v = getVacation();
+  if (!v?.token || typeof token !== 'string') return null;
+  const a = Buffer.from(token), b = Buffer.from(v.token);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  return localDateKey() <= addDaysKey(v.to, 2) ? v : null;
+}
+
 setInterval(async () => {
   try {
     // Reports arrivés à échéance : on ne renvoie que les plantes toujours pas arrosées
@@ -463,6 +476,7 @@ setInterval(async () => {
     if (getSetting('last_reminder_date', '') === today) return;
     if (localHM() < time) return;
     setSetting('last_reminder_date', today);
+    if (vacationActive()) return; // en vacances : c'est la personne qui garde qui arrose
     const r = await sendReminders();
     if (r.notifications) console.log(`[rosee] rappel envoyé (${r.notifications} notification(s), ${r.total} appareil(s))`);
   } catch (e) {
@@ -522,7 +536,7 @@ function rateLimit({ windowMs, max }) {
 }
 const RL = process.env.RATE_LIMIT !== '0';
 if (RL) {
-  app.use(['/auth', '/cal', '/push-action'], rateLimit({ windowMs: 60_000, max: 30 }));
+  app.use(['/auth', '/cal', '/push-action', '/garde', '/garde-api', '/garde-photo'], rateLimit({ windowMs: 60_000, max: 30 }));
   app.use('/api', rateLimit({ windowMs: 60_000, max: 600 }));
 }
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -550,7 +564,7 @@ app.get('/cal/:token.ics', wrap(async (req, res) => {
   const horizon = 60;
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Rosee//Arrosages//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
-    'X-WR-CALNAME:Rosée — arrosages', `X-WR-TIMEZONE:${TZ}`, 'REFRESH-INTERVAL;VALUE=DURATION:PT6H', 'X-PUBLISHED-TTL:PT6H'];
+    'X-WR-CALNAME:Rosée', `X-WR-TIMEZONE:${TZ}`, 'REFRESH-INTERVAL;VALUE=DURATION:PT6H', 'X-PUBLISHED-TTL:PT6H'];
   for (const p of plants) {
     for (const { offset, interval } of upcomingDates(p, p.days_left, horizon)) {
       const key = addDaysKey(today, offset);
@@ -614,6 +628,44 @@ app.get('/push-photo/:file', (req, res) => {
   const file = path.basename(req.params.file);
   const owner = t && db.prepare('SELECT id FROM plants WHERE photo=?').get(file);
   if (!owner || !t.ids.includes(owner.id)) return res.status(404).end();
+  res.set('Cache-Control', 'private, max-age=86400').sendFile(path.join(PHOTO_DIR, file));
+});
+
+// ---------- Page de la personne qui arrose pendant les vacances (sans compte, jeton secret) ----------
+app.get('/garde/:token', (req, res) => {
+  if (!readSitterToken(req.params.token)) return res.status(404).sendFile(path.join(__dirname, 'public', 'garde.html'));
+  res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer').sendFile(path.join(__dirname, 'public', 'garde.html'));
+});
+app.post('/garde-api', express.json({ limit: '4kb' }), wrap(async (req, res) => {
+  const v = readSitterToken(req.body?.token);
+  if (!v) return res.status(403).json({ error: 'Ce lien n’est plus valable. Demandez-en un nouveau.' });
+  const today = localDateKey();
+  if (req.body?.action === 'water') {
+    const id = Number(req.body.id);
+    if (!getPlantRow(id)) return res.status(404).json({ error: 'Plante introuvable' });
+    const last = db.prepare('SELECT at FROM waterings WHERE plant_id=? ORDER BY at DESC LIMIT 1').get(id)?.at;
+    if (!(last && localDateKey(new Date(last)) === today)) {
+      db.prepare('INSERT INTO waterings(plant_id, at, note) VALUES(?,?,?)').run(id, new Date().toISOString(), `garde:${v.name || ''}`);
+      google.scheduleSync(2000);
+      if (v.notify !== false) {
+        const p = getPlantRow(id);
+        pushToAll({ title: `${p.name} arrosée`, body: `Par ${v.name || 'la personne qui garde vos plantes'}.`, url: `/#/plante/${id}`, tag: `rosee-garde-${id}` }).catch(() => {});
+      }
+    }
+  } else if (req.body?.action !== 'info') return res.status(400).json({ error: 'Action inconnue' });
+  const plants = (await allPlants()).map((p) => ({
+    id: p.id, name: p.name, room: p.room, notes: p.notes, days_left: p.days_left, last_watered_at: p.last_watered_at,
+    watered_today: !!p.last_watered_at && localDateKey(new Date(p.last_watered_at)) === today,
+    water: p.care?.water ? { short: p.care.water.short, text: p.care.water.text } : null,
+    dry: p.care?.dry || null,
+    photo: p.photo_url ? `/garde-photo/${path.basename(p.photo_url)}?t=${encodeURIComponent(req.body.token)}` : null,
+  })).sort((a, b) => a.days_left - b.days_left || a.name.localeCompare(b.name));
+  res.set('Cache-Control', 'no-store').json({ from: v.from, to: v.to, name: v.name, note: v.note, today, plants });
+}));
+app.get('/garde-photo/:file', (req, res) => {
+  if (!readSitterToken(req.query.t)) return res.status(404).end();
+  const file = path.basename(req.params.file);
+  if (!db.prepare('SELECT id FROM plants WHERE photo=?').get(file)) return res.status(404).end();
   res.set('Cache-Control', 'private, max-age=86400').sendFile(path.join(PHOTO_DIR, file));
 });
 
@@ -916,6 +968,37 @@ app.delete('/api/waterings/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Mode vacances (côté propriétaire) ----------
+function vacationView() {
+  const v = getVacation();
+  if (!v) return { vacation: null };
+  const base = (process.env.SITTER_BASE_URL || process.env.PUBLIC_URL || '').replace(/\/$/, '');
+  const count = db.prepare("SELECT COUNT(*) AS n FROM waterings WHERE note LIKE 'garde:%' AND at >= ?").get(new Date(`${v.from}T00:00:00`).toISOString()).n;
+  return { vacation: { from: v.from, to: v.to, name: v.name, note: v.note, notify: v.notify !== false }, active: vacationActive(v), link: `${base}/garde/${v.token}`, sitter_waterings: count };
+}
+const isDayKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k) && !isNaN(new Date(`${k}T12:00:00Z`));
+app.get('/api/vacation', (_req, res) => res.json(vacationView()));
+app.put('/api/vacation', (req, res) => {
+  const b = req.body || {};
+  if (!isDayKey(b.from) || !isDayKey(b.to) || b.to < b.from) return res.status(400).json({ error: 'Dates invalides' });
+  if (b.to < localDateKey()) return res.status(400).json({ error: 'La date de retour est déjà passée' });
+  if ((new Date(`${b.to}T12:00:00Z`) - new Date(`${b.from}T12:00:00Z`)) / DAY > 120) return res.status(400).json({ error: 'Absence limitée à 4 mois' });
+  const prev = getVacation();
+  setSetting('vacation', JSON.stringify({
+    from: b.from, to: b.to, name: String(b.name || '').trim().slice(0, 40), note: String(b.note || '').trim().slice(0, 1000),
+    notify: b.notify !== false, token: prev?.token || crypto.randomBytes(18).toString('base64url'),
+  }));
+  res.json(vacationView());
+});
+// Nouveau lien : l'ancien cesse aussitôt de fonctionner
+app.post('/api/vacation/rotate', (_req, res) => {
+  const v = getVacation();
+  if (!v) return res.status(404).json({ error: 'Aucune absence prévue' });
+  setSetting('vacation', JSON.stringify({ ...v, token: crypto.randomBytes(18).toString('base64url') }));
+  res.json(vacationView());
+});
+app.delete('/api/vacation', (_req, res) => { db.prepare("DELETE FROM settings WHERE key='vacation'").run(); res.json({ vacation: null }); });
+
 // ---------- Autres soins ----------
 // done : soin effectué ; skip : « pas besoin cette année » (rempotage), la vérification revient dans un an
 app.post('/api/plants/:id/care/:type', (req, res) => {
@@ -962,7 +1045,7 @@ app.get('/api/waterings', (req, res) => {
   const from = new Date(req.query.from || Date.now() - 31 * DAY);
   const to = new Date(req.query.to || Date.now());
   if (isNaN(from) || isNaN(to)) return res.status(400).json({ error: 'Période invalide' });
-  const rows = db.prepare(`SELECT w.id, w.at, w.plant_id, p.name AS plant_name, p.room, COALESCE(NULLIF(u.given_name, ''), u.name) AS by_name
+  const rows = db.prepare(`SELECT w.id, w.at, w.plant_id, p.name AS plant_name, p.room, COALESCE(NULLIF(u.given_name, ''), u.name, CASE WHEN w.note LIKE 'garde:%' THEN COALESCE(NULLIF(substr(w.note, 7), ''), 'la personne qui garde') END) AS by_name
     FROM waterings w JOIN plants p ON p.id = w.plant_id LEFT JOIN users u ON u.id = w.user_id WHERE w.at >= ? AND w.at <= ? ORDER BY w.at DESC LIMIT 2000`)
     .all(from.toISOString(), to.toISOString());
   res.json(rows);

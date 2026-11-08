@@ -28,7 +28,12 @@ async function api(path, opts = {}) {
 }
 
 const state = { plants: [], settings: null, me: null, version: null };
-async function loadPlants() { state.plants = await api('/api/plants'); return state.plants; }
+async function loadPlants() {
+  const [plants, vac] = await Promise.all([api('/api/plants'), api('/api/vacation').catch(() => null)]);
+  state.plants = plants;
+  state.vacation = vac;
+  return state.plants;
+}
 async function loadSettings() { state.settings = await api('/api/settings'); return state.settings; }
 
 // ---------- Thème ----------
@@ -368,6 +373,7 @@ async function renderHome() {
       <div><h1>${esc(greeting())} ${icon('plants')}</h1><p>${esc(sub)}</p></div>
       <div class="head-actions mobile-only"><a class="icon-btn" href="#/parametres" aria-label="Paramètres">${icon('gear')}</a></div>
     </div>
+    ${vacationBanner()}
     ${!P.length ? emptyGarden() : `
     <section class="card figures" aria-label="Résumé de la serre">
       <div class="fig"><b>${P.length}</b><span>${P.length > 1 ? 'plantes' : 'plante'}</span></div>
@@ -1049,7 +1055,7 @@ async function openFeed() {
       <div class="feed"><code id="feed-url">${esc(url)}</code><button class="icon-btn" type="button" id="copy" aria-label="Copier le lien">${icon('link')}</button></div>
       <ol class="steps">
         <li>Sur ordinateur, ouvrez Google Agenda, puis <b>Autres agendas</b> → <b>+</b> → <b>À partir de l'URL</b>.</li>
-        <li>Collez le lien et validez. L'agenda « Rosée — arrosages » apparaît aussi sur votre téléphone.</li>
+        <li>Collez le lien et validez. L'agenda « Rosée » apparaît aussi sur votre téléphone.</li>
         <li>Google met à jour les agendas abonnés toutes les quelques heures.</li>
       </ol>
       <div class="hint"><b>Important :</b> Google lit ce lien depuis Internet. ${base ? 'Ce lien utilise l\u2019adresse publique configurée.' : 'Configurez <code>FEED_BASE_URL</code> avec une adresse joignable depuis Internet (voir README).'} Toute personne qui a le lien voit les noms de vos plantes et les dates.</div>
@@ -1126,6 +1132,86 @@ function updateSideHA(st) {
   el.innerHTML = `<a class="side-ha" href="#/capteurs"><span class="status-dot ${st.ok ? 'ok' : 'off'}"></span><span><b>Home Assistant</b>${st.ok ? 'Connecté' : 'Injoignable'}</span></a>`;
 }
 
+// ================= ABSENCE =================
+const fmtDayKey = (k) => fmtDay(keyToDate(k));
+function vacationBanner() {
+  const v = state.vacation;
+  if (!v?.vacation) return '';
+  const { from, to, name } = v.vacation;
+  if (!v.active && from > dayKey(new Date())) return `<a class="vac-banner soon" href="#/parametres">${icon('calendar')}<span><b>Absence prévue du ${esc(fmtDayKey(from))} au ${esc(fmtDayKey(to))}</b>${name ? `${esc(name)} s'occupera des plantes` : 'Pensez à envoyer le lien à la personne qui arrose'}</span></a>`;
+  if (!v.active) return '';
+  return `<a class="vac-banner" href="#/parametres">${icon('sun')}<span><b>En vacances jusqu'au ${esc(fmtDayKey(to))}</b>Rappels en pause · ${v.sitter_waterings ? `${plural(v.sitter_waterings, 'arrosage', 'arrosages')} par ${esc(name || 'la personne qui garde')}` : 'aucun arrosage pour l\u2019instant'}</span></a>`;
+}
+function drawVacation() {
+  const el = $('#vacation');
+  if (!el) return;
+  const v = state.vacation;
+  const head = `<div class="section-title"><h2>${icon('sun')} Absence</h2></div>`;
+  if (!v?.vacation) {
+    el.innerHTML = `${head}<div class="rows"><div class="row"><div class="txt"><b>Partir en vacances</b><span>Met les rappels en pause et donne un lien à la personne qui arrose, sans compte à créer</span></div>
+      <button class="btn sm" type="button" id="vac-new">${icon('calendar')}Prévoir</button></div></div>`;
+    $('#vac-new', el).onclick = () => openVacationForm();
+    return;
+  }
+  const { from, to, name, notify } = v.vacation;
+  if (v.link.startsWith('/')) v.link = location.origin + v.link;
+  el.innerHTML = `${head}
+    <div class="vac-dates"><b>Du ${esc(fmtDayKey(from))} au ${esc(fmtDayKey(to))}</b><span class="badge ${v.active ? 'b-water' : 'b-ok'}">${v.active ? 'En cours' : 'Prévue'}</span></div>
+    <p class="muted" style="font-size:13px;margin:4px 0 12px">${name ? `${esc(name)} arrose` : 'Personne désignée'} · rappels en pause pendant l'absence${notify ? ' · vous êtes prévenu à chaque arrosage' : ''}${v.sitter_waterings ? ` · ${plural(v.sitter_waterings, 'arrosage fait', 'arrosages faits')}` : ''}</p>
+    <div class="feed-box"><input class="input" readonly value="${esc(v.link)}" aria-label="Lien pour la personne qui arrose" id="vac-link"></div>
+    <div class="vac-actions">
+      <button class="btn sm" type="button" id="vac-share">${icon('link')}${navigator.share ? 'Envoyer le lien' : 'Copier le lien'}</button>
+      <button class="btn secondary sm" type="button" id="vac-edit">${icon('edit')}Modifier</button>
+      <button class="btn secondary sm" type="button" id="vac-rotate">${icon('refresh')}Nouveau lien</button>
+      <button class="btn danger sm" type="button" id="vac-end">${v.active ? 'Je suis rentré' : 'Annuler'}</button>
+    </div>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Le lien fonctionne jusqu'à deux jours après le retour. Il doit être joignable depuis le téléphone de la personne : sur votre Wi-Fi, ou via une adresse publique.</p>`;
+  $('#vac-share', el).onclick = async () => {
+    const text = `Voici la liste des plantes à arroser, avec un bouton « Arrosée » pour chacune : ${v.link}`;
+    if (navigator.share) { try { await navigator.share({ title: 'Plantes à arroser', text, url: v.link }); } catch {} return; }
+    try { await navigator.clipboard.writeText(v.link); toast('Lien copié'); } catch { $('#vac-link', el).select(); }
+  };
+  $('#vac-edit', el).onclick = () => openVacationForm(v.vacation);
+  $('#vac-rotate', el).onclick = async () => {
+    state.vacation = await api('/api/vacation/rotate', { method: 'POST' });
+    drawVacation(); toast('Nouveau lien : l’ancien ne fonctionne plus');
+  };
+  $('#vac-end', el).onclick = async () => {
+    await api('/api/vacation', { method: 'DELETE' });
+    state.vacation = { vacation: null };
+    drawVacation(); toast(v.active ? 'Bon retour ! Les rappels reprennent' : 'Absence annulée');
+  };
+}
+function openVacationForm(cur = null) {
+  const today = dayKey(new Date());
+  openSheet(`<div class="sheet-inner"><form id="vac-form">
+    <div class="sheet-head"><h2 id="sheet-title">${cur ? 'Modifier l\u2019absence' : 'Prévoir une absence'}</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="sheet-body">
+      <div class="vac-grid">
+        <label class="field"><span>Départ</span><input class="input" type="date" name="from" required min="${today}" value="${esc(cur?.from || today)}"></label>
+        <label class="field"><span>Retour</span><input class="input" type="date" name="to" required min="${today}" value="${esc(cur?.to || '')}"></label>
+      </div>
+      <label class="field"><span>Qui arrose ?</span><input class="input" name="name" maxlength="40" placeholder="Prénom (facultatif)" value="${esc(cur?.name || '')}"></label>
+      <label class="field"><span>Un mot pour elle ou lui</span><textarea class="input" name="note" maxlength="1000" placeholder="La clé est chez la gardienne. L'arrosoir est sous l'évier…">${esc(cur?.note || '')}</textarea></label>
+      <div class="row" style="margin-top:14px"><div class="txt"><b>Me prévenir à chaque arrosage</b><span>Une notification quand une plante est marquée « Arrosée »</span></div>
+        <label class="switch"><input type="checkbox" name="notify" ${cur?.notify === false ? '' : 'checked'}><span></span></label></div>
+      <p class="muted" style="font-size:12.5px;margin:14px 0 0">Pendant l'absence, vos rappels sont en pause. La personne reçoit un lien vers une page simple : les plantes à arroser ce jour-là, leurs photos, la quantité d'eau et un bouton « Arrosée ». Les arrosages s'enregistrent dans Rosée comme les vôtres.</p>
+    </div>
+    <div class="sheet-foot"><button class="btn block" type="submit">${cur ? 'Enregistrer' : 'Créer le lien'}</button></div>
+  </form></div>`, (root) => {
+    const f = $('#vac-form', root);
+    f.elements.from.onchange = () => { f.elements.to.min = f.elements.from.value; };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const b = f.querySelector('[type=submit]'); b.disabled = true;
+      try {
+        state.vacation = await api('/api/vacation', { method: 'PUT', json: { from: f.elements.from.value, to: f.elements.to.value, name: f.elements.name.value, note: f.elements.note.value, notify: f.elements.notify.checked } });
+        sheet.close(); drawVacation(); toast(cur ? 'Absence modifiée' : 'Lien créé : envoyez-le à la personne qui arrose');
+      } catch (err) { toast(err.message); b.disabled = false; }
+    };
+  });
+}
+
 // ================= PARAMÈTRES =================
 async function renderSettings() {
   setTab('settings');
@@ -1158,6 +1244,8 @@ async function renderSettings() {
         </div>
         <p class="muted" style="font-size:12.5px;margin:10px 0 0">${plural(st.devices, 'appareil abonné', 'appareils abonnés')}</p>
       </section>
+
+      <section class="card" id="vacation"></section>
 
       <section class="card">
         <div class="section-title"><h2>Profil et apparence</h2></div>
@@ -1220,6 +1308,7 @@ async function renderSettings() {
   $('#test')?.addEventListener('click', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(r.sent ? 'Notification de test envoyée' : "Aucun appareil n'a reçu le test"); });
 
   drawAbout();
+  drawVacation();
   api('/api/backups').then((b) => {
     const el = $('#backup-info');
     if (!el) return;
@@ -1311,7 +1400,7 @@ function drawGcal() {
   const c = state.me.calendar;
   if (!c.connected) {
     el.innerHTML = `<div class="gcal-off">
-      <p class="muted" style="margin:0 0 10px">Rosée crée un agenda « Rosée — arrosages » dans votre Google Agenda et le tient à jour : un événement par arrosage prévu, avec les alertes de votre choix. Rosée n'a accès qu'à cet agenda, pas à vos autres rendez-vous.</p>
+      <p class="muted" style="margin:0 0 10px">Rosée crée un agenda « Rosée » dans votre Google Agenda et le tient à jour : un événement par arrosage prévu, avec les alertes de votre choix. Rosée n'a accès qu'à cet agenda, pas à vos autres rendez-vous.</p>
       ${c.last_sync_error ? `<div class="hint" style="margin:0 0 10px">${esc(c.last_sync_error)}</div>` : ''}
       <a class="btn" href="/auth/google/calendar">${icon('calendar')}Connecter Google Agenda</a></div>`;
     return;
@@ -1353,7 +1442,7 @@ function drawGcal() {
   $('#g-off', el).onclick = () => openSheet(`<div class="sheet-inner">
     <div class="sheet-head"><h2 id="sheet-title">Déconnecter Google Agenda ?</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
     <div class="sheet-body"><p class="muted" style="margin:0">Rosée ne mettra plus votre agenda à jour et son accès sera révoqué.</p>
-      <label class="field" style="display:flex;gap:10px;align-items:center"><input type="checkbox" id="del-cal" checked> <span style="margin:0;font-weight:600">Supprimer aussi l'agenda « Rosée — arrosages »</span></label></div>
+      <label class="field" style="display:flex;gap:10px;align-items:center"><input type="checkbox" id="del-cal" checked> <span style="margin:0;font-weight:600">Supprimer aussi l'agenda « Rosée »</span></label></div>
     <div class="sheet-foot" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <button class="btn secondary" type="button" data-close>Annuler</button>
       <button class="btn solid-danger" type="button" id="g-off-ok">Déconnecter</button></div></div>`, (root) => {
@@ -1419,7 +1508,7 @@ function renderLogin() {
   const err = new URLSearchParams(location.hash.split('?')[1] || '').get('erreur');
   view.innerHTML = `<div class="login">
     <div class="login-card">
-      <span class="logo-mark big">${icon('plants')}</span>
+      <img class="logo-img big" src="/icons/icon.svg" alt="" width="72" height="72">
       <h1>Rosée</h1>
       <p class="muted">Vos plantes, leurs arrosages et vos rappels, partagés avec la maison.</p>
       ${err ? `<div class="hint" role="alert">${esc(err)}</div>` : ''}

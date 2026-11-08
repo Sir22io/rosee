@@ -796,3 +796,18 @@ body.logged-out .view { max-width: none; padding: 0; margin: 0; }
   .day .pills span.care { background: var(--green-soft); color: var(--green-deep); }
   .day .pills span svg { font-size: 11px; vertical-align: -1px; margin-right: 3px; }
 }
+
+.logo-img { width: 36px; height: 36px; display: block; }
+.logo-img.big { width: 72px; height: 72px; }
+
+/* ---------- Absence ---------- */
+.vac-banner { display: flex; gap: 12px; align-items: center; padding: 12px 14px; margin-bottom: 14px; border-radius: var(--r); background: var(--teal-soft); color: var(--teal-ink); text-decoration: none; }
+.vac-banner.soon { background: var(--green-soft); color: var(--green-deep); }
+.vac-banner svg { font-size: 22px; }
+.vac-banner span { font-size: 13px; line-height: 1.4; }
+.vac-banner b { display: block; font-size: 14.5px; color: var(--ink); }
+.vac-dates { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vac-dates b { font-size: 16px; }
+.vac-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.vac-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.vac-grid .field { margin-top: 0; }
