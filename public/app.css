@@ -536,6 +536,30 @@ fieldset.field { border: 0; padding: 0; margin-inline: 0; min-width: 0; }
 .switch input:checked + span::after { transform: translateX(20px); }
 .switch input:focus-visible + span { outline: 2px solid var(--teal); outline-offset: 2px; }
 
+/* Compte et connexion */
+body.logged-out .sidebar, body.logged-out .tabbar, body.logged-out .web-top { display: none !important; }
+body.logged-out .shell { display: block; }
+body.logged-out .view { max-width: none; padding: 0; margin: 0; }
+.login { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; background: radial-gradient(120% 70% at 50% 0%, var(--green-soft), var(--bg) 70%); }
+.login-card { width: 100%; max-width: 380px; text-align: center; background: var(--card); border: 1px solid var(--line-soft); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: 32px 24px 24px; }
+.login-card h1 { margin: 14px 0 4px; font-size: 28px; font-weight: 800; color: var(--green); letter-spacing: -.02em; }
+.login-card > p { margin: 0 0 20px; }
+.login-card .hint { text-align: left; margin: 0 0 16px; }
+.login-card .small { font-size: 12.5px; margin: 14px 0 0; }
+.logo-mark { width: 36px; height: 36px; border-radius: 11px; background: var(--green); color: var(--green-ink); display: inline-grid; place-items: center; }
+.logo-mark.big { width: 64px; height: 64px; border-radius: 20px; }
+.logo-mark.big svg { font-size: 36px; }
+.account { display: flex; align-items: center; gap: 12px; }
+.account .txt { flex: 1; min-width: 0; }
+.account .txt b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.account .txt span { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.avatar { width: 42px; height: 42px; border-radius: 50%; background: var(--green-soft); color: var(--green); display: grid; place-items: center; font-weight: 800; font-size: 17px; flex: none; }
+.rows > .row.col { flex-direction: column; align-items: stretch; }
+.chips.wrap { flex-wrap: wrap; overflow: visible; margin: 8px 0 0; padding: 0; }
+.row .txt span.err { color: var(--red-ink); }
+#gcal { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+.gcal-off { padding: 2px 0 12px; }
+
 /* Repères d'entretien et saisons */
 .care-reco { margin: 12px 0 2px; padding: 12px; border-radius: var(--r-sm); background: var(--green-soft); }
 .reco-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }

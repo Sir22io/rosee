@@ -89,7 +89,34 @@ Rosée ne fait que **lire** l'API REST de HA (`/api/states`, `/api/history`). Le
   - capteur hors ligne ou muet depuis plus de 12 h,
   - batterie ≤ 15 %.
 
-## Agenda Google (sans VPN)
+## Comptes Google et Google Agenda
+
+La connexion Google est **facultative**. Sans configuration, l'appli reste ouverte, comme avant. Une fois activée :
+- la **serre est partagée** : tous les comptes listés dans `ALLOWED_EMAILS` voient les mêmes plantes, et l'historique indique qui a arrosé ;
+- chacun peut **connecter son Google Agenda** : Rosée y crée un agenda « Rosée — arrosages » et le tient à jour, avec un événement par arrosage prévu. Le rythme saisonnier est pris en compte, et un arrosage fait est marqué « ✓ » ;
+- dans **Paramètres → Agenda**, chacun règle l'heure, la durée, les alertes (au moment même, 10 min, 30 min, 1 h, 2 h, 3 h ou la veille, jusqu'à 5) et leur type (notification ou e-mail) ;
+- Rosée ne demande que la portée `calendar.app.created` : elle accède aux seuls agendas qu'elle a créés, **pas à tes rendez-vous**. Le jeton Google est chiffré dans la base (AES-256-GCM) ;
+- tout passe par des connexions **sortantes**, sans rien exposer sur Internet. Rosée a besoin d'un accès en 443 vers `accounts.google.com`, `oauth2.googleapis.com` et `www.googleapis.com`.
+
+### Créer l'identifiant Google (une fois, ~10 min)
+
+1. Sur [console.cloud.google.com](https://console.cloud.google.com), crée un projet, par ex. « Rosée ».
+2. Dans **APIs et services → Bibliothèque**, active **Google Calendar API**.
+3. Dans **Écran de consentement OAuth** (Google Auth Platform) :
+   - type **Externe**, nom « Rosée », ton adresse en contact ;
+   - **Accès aux données** : ajoute les portées `openid`, `email`, `profile` et `…/auth/calendar.app.created` ;
+   - **Audience** : clique sur **Publier l'application** (statut *En production*). En mode *Test*, Google coupe l'accès à l'agenda au bout de 7 jours. Une application personnelle non validée affiche un écran d'avertissement : choisis *Paramètres avancés → Accéder à Rosée*.
+4. Dans **Identifiants → Créer → ID client OAuth → Application Web** :
+   - URI de redirection autorisé : `https://plantes.<ton-domaine>/auth/google/callback`. Il doit être en HTTPS et correspondre exactement à `PUBLIC_URL`. Le domaine n'a pas besoin d'être joignable depuis Internet : c'est ton navigateur qui suit la redirection.
+5. Reporte l'ID et le secret dans la stack :
+   ```
+   PUBLIC_URL=https://plantes.<ton-domaine>
+   GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
+   ALLOWED_EMAILS=toi@gmail.com,autre@gmail.com
+   ```
+
+## Agenda par lien .ics (sans compte)
 
 **Calendrier → Google Agenda** donne un lien `.ics` secret. Dans Google Agenda, fais *Autres agendas → + → À partir de l'URL*. Les arrosages prévus sur 60 jours apparaissent sur tous tes appareils. Google rafraîchit ce type d'agenda toutes les quelques heures.
 
@@ -125,6 +152,10 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 | `VAPID_SUBJECT` | — | Contact `mailto:` transmis aux services push |
 | `HA_URL` / `HA_TOKEN` | vides | Connexion à Home Assistant |
 | `FEED_BASE_URL` | vide | Adresse publique utilisée dans le lien d'agenda |
+| `PUBLIC_URL` | vide | Adresse HTTPS de l'appli (obligatoire pour la connexion Google) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | vides | Identifiant OAuth : active les comptes et Google Agenda |
+| `ALLOWED_EMAILS` | vide | Comptes Google autorisés, séparés par des virgules |
+| `SESSION_SECRET` | généré | Clé de chiffrement des jetons (sinon `data/secret.key`) |
 | `SEASONS` | `north` | `south` pour inverser les saisons |
 | `PHOTO_LOOKUP` | `1` | `0` désactive l'attribution automatique d'une photo de référence |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | générées | Pour imposer tes propres clés |
@@ -133,7 +164,7 @@ Pour activer les rappels sur chaque appareil : **Paramètres → Rappels → Act
 
 ## Sauvegarde
 
-Sauvegarde tout le dossier `data/` (`rosee.db`, `photos/`, `vapid.json`). Si `vapid.json` est perdu, tous les appareils doivent se réabonner aux rappels.
+Sauvegarde tout le dossier `data/` (`rosee.db`, `photos/`, `vapid.json`, `secret.key`). Si `vapid.json` est perdu, tous les appareils doivent se réabonner aux rappels.
 
 ## API
 

@@ -10,6 +10,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { findCare } from './care.js';
+import { setupGoogle } from './google.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -430,6 +431,10 @@ if (AUTH_USER && AUTH_PASS) {
 }
 
 app.use(express.json({ limit: '100kb' }));
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+// Comptes Google : routes /auth/* et /api/me, puis garde sur l'API et les photos
+const google = setupGoogle(app, { db, TZ, DATA_DIR, wrap, allPlants, upcomingDates, localDateKey, addDaysKey });
+app.use(['/api', '/photos'], google.requireAuth);
 app.use('/photos', express.static(PHOTO_DIR, { maxAge: '30d', immutable: true }));
 app.use(
   express.static(path.join(__dirname, 'public'), {
@@ -658,6 +663,7 @@ app.put('/api/plants/:id', upload.single('photo'), wrap(async (req, res) => {
   db.prepare('UPDATE plants SET name=@name,species=@species,room=@room,light=@light,interval_days=@interval_days,interval_winter=@interval_winter,seasonal=@seasonal,notes=@notes,photo=@photo,sensors=@sensors,targets=@targets,photo_source=@photo_source,photo_credit=@photo_credit,photo_lookup=@photo_lookup WHERE id=@id')
     .run({ ...f, photo, photo_source, photo_credit, photo_lookup, id: existing.id });
   if (!photo && photo_lookup === 0) runPhotoLookups();
+  google.scheduleSync();
   res.json(serializePlant(getPlantRow(existing.id), await loadStates([])));
 }));
 
@@ -666,6 +672,7 @@ app.delete('/api/plants/:id', (req, res) => {
   if (!p) return res.status(404).json({ error: 'Plante introuvable' });
   db.prepare('DELETE FROM plants WHERE id=?').run(p.id);
   removePhoto(p.photo);
+  google.scheduleSync();
   res.status(204).end();
 });
 
@@ -677,7 +684,8 @@ app.post('/api/plants/:id/water', (req, res) => {
     const d = new Date(req.body.at);
     if (!isNaN(d) && d <= new Date(Date.now() + 60000)) at = d;
   }
-  const info = db.prepare('INSERT INTO waterings(plant_id, at, note) VALUES(?,?,?)').run(p.id, at.toISOString(), String(req.body?.note || '').slice(0, 500));
+  const info = db.prepare('INSERT INTO waterings(plant_id, at, note, user_id) VALUES(?,?,?,?)').run(p.id, at.toISOString(), String(req.body?.note || '').slice(0, 500), req.user?.id ?? null);
+  google.scheduleSync(2000);
   res.status(201).json({ watering_id: info.lastInsertRowid });
 });
 
@@ -685,6 +693,7 @@ app.delete('/api/waterings/:id', (req, res) => {
   const w = db.prepare('SELECT plant_id FROM waterings WHERE id=?').get(req.params.id);
   if (!w) return res.status(404).json({ error: 'Arrosage introuvable' });
   db.prepare('DELETE FROM waterings WHERE id=?').run(req.params.id);
+  google.scheduleSync(2000);
   res.json({ ok: true });
 });
 
@@ -693,8 +702,8 @@ app.get('/api/waterings', (req, res) => {
   const from = new Date(req.query.from || Date.now() - 31 * DAY);
   const to = new Date(req.query.to || Date.now());
   if (isNaN(from) || isNaN(to)) return res.status(400).json({ error: 'Période invalide' });
-  const rows = db.prepare(`SELECT w.id, w.at, w.plant_id, p.name AS plant_name, p.room
-    FROM waterings w JOIN plants p ON p.id = w.plant_id WHERE w.at >= ? AND w.at <= ? ORDER BY w.at DESC LIMIT 2000`)
+  const rows = db.prepare(`SELECT w.id, w.at, w.plant_id, p.name AS plant_name, p.room, COALESCE(NULLIF(u.given_name, ''), u.name) AS by_name
+    FROM waterings w JOIN plants p ON p.id = w.plant_id LEFT JOIN users u ON u.id = w.user_id WHERE w.at >= ? AND w.at <= ? ORDER BY w.at DESC LIMIT 2000`)
     .all(from.toISOString(), to.toISOString());
   res.json(rows);
 });
@@ -837,7 +846,6 @@ app.post('/api/push/test', wrap(async (_req, res) => {
   res.json(await pushToAll(payload));
 }));
 
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.use((err, _req, res, _next) => {
   if (err.status === 400) return res.status(400).json({ error: err.message });

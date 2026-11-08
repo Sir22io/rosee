@@ -1,5 +1,5 @@
 // Rosée — service worker : cache de l'interface + notifications push.
-const CACHE = 'rosee-v2';
+const CACHE = 'rosee-v3';
 const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/manifest.webmanifest', '/fonts/manrope.woff2', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
@@ -12,7 +12,7 @@ self.addEventListener('activate', (e) => {
 // Interface : réseau d'abord, cache en secours. API : toujours le réseau.
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/cal/')) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/cal/') || url.pathname.startsWith('/auth/')) return;
   if (url.pathname.startsWith('/photos/') || url.pathname.startsWith('/fonts/')) {
     e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }

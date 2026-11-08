@@ -22,11 +22,12 @@ async function api(path, opts = {}) {
   const res = await fetch(path, init);
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
+  if (res.status === 401 && data.login && path !== '/api/me') { location.hash = '#/connexion'; throw new Error('Connexion requise'); }
+  if (!res.ok) throw Object.assign(new Error(data.error || `Erreur ${res.status}`), { status: res.status, data });
   return data;
 }
 
-const state = { plants: [], settings: null };
+const state = { plants: [], settings: null, me: null };
 async function loadPlants() { state.plants = await api('/api/plants'); return state.plants; }
 async function loadSettings() { state.settings = await api('/api/settings'); return state.settings; }
 
@@ -181,7 +182,7 @@ function emptyGarden() {
 // ================= ACCUEIL =================
 function greeting() {
   const h = new Date().getHours();
-  const name = state.settings?.user_name;
+  const name = state.settings?.user_name || state.me?.user?.given_name;
   return `${h >= 18 || h < 4 ? 'Bonsoir' : 'Bonjour'}${name ? ` ${name}` : ''}`;
 }
 
@@ -238,7 +239,7 @@ async function renderHome() {
     const el = $('#activity');
     if (!el) return;
     el.innerHTML = `<div class="section-title"><h2>Activité récente</h2></div>${rows.length
-      ? `<ul class="activity">${rows.slice(0, 6).map((w) => `<li><span class="a-ico">${icon('drop')}</span><span><b>${esc(w.plant_name)}</b> arrosée</span><time datetime="${esc(w.at)}">${esc(relAgo(w.at))}</time></li>`).join('')}</ul>`
+      ? `<ul class="activity">${rows.slice(0, 6).map((w) => `<li><span class="a-ico">${icon('drop')}</span><span><b>${esc(w.plant_name)}</b> arrosée${w.by_name ? ` par ${esc(w.by_name)}` : ''}</span><time datetime="${esc(w.at)}">${esc(relAgo(w.at))}</time></li>`).join('')}</ul>`
       : `<div class="muted">Aucun arrosage ces trois dernières semaines.</div>`}`;
   } catch {}
 }
@@ -692,7 +693,7 @@ async function renderCalendar() {
   $('#prev').onclick = () => { calMonth.setMonth(calMonth.getMonth() - 1); renderCalendar(); };
   $('#next').onclick = () => { calMonth.setMonth(calMonth.getMonth() + 1); renderCalendar(); };
   $('#today').onclick = () => { calMonth = startOfDay(new Date()); calMonth.setDate(1); calSelected = startOfDay(new Date()); renderCalendar(); };
-  $('#feed').onclick = openFeed;
+  $('#feed').onclick = () => (state.me?.auth ? (location.hash = '#/parametres?section=agenda') : openFeed());
 
   // Événements : arrosages faits (API) + projections à partir d'aujourd'hui
   const events = new Map();
@@ -889,9 +890,20 @@ async function renderSettings() {
 
       <section class="card">
         <div class="section-title"><h2>Agenda</h2></div>
-        <div class="rows"><div class="row"><div class="txt"><b>Google Agenda</b><span>Voir les arrosages prévus à côté de vos rendez-vous</span></div>
-          <button class="btn secondary sm green" type="button" id="feed">${icon('link')}Configurer</button></div></div>
+        ${state.me?.auth ? '<div id="gcal"></div>' : ''}
+        <div class="rows"><div class="row"><div class="txt"><b>${state.me?.auth ? 'Lien d\u2019abonnement (.ics)' : 'Google Agenda'}</b><span>${state.me?.auth ? 'Autre méthode, sans compte : lecture seule, exposition requise' : 'Voir les arrosages prévus à côté de vos rendez-vous'}</span></div>
+          <button class="btn secondary sm green" type="button" id="feed">${icon('link')}${state.me?.auth ? 'Afficher' : 'Configurer'}</button></div></div>
       </section>
+
+      ${state.me?.auth ? `<section class="card">
+        <div class="section-title"><h2>Compte</h2></div>
+        <div class="account">
+          <span class="avatar" aria-hidden="true">${esc((state.me.user.given_name || state.me.user.name || state.me.user.email).charAt(0).toUpperCase())}</span>
+          <div class="txt"><b>${esc(state.me.user.name || state.me.user.email)}</b><span>${esc(state.me.user.email)}</span></div>
+          <button class="btn secondary sm" type="button" id="logout">Se déconnecter</button>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin:12px 0 0">La serre est partagée : tous les comptes autorisés voient les mêmes plantes. Chacun connecte son propre agenda et règle ses alertes.</p>
+      </section>` : ''}
 
       <section class="card" id="ha-settings"><div class="section-title"><h2>Home Assistant</h2></div><div class="muted">Vérification…</div></section>
     </div>`;
@@ -901,6 +913,12 @@ async function renderSettings() {
   $('#uname').onchange = async (e) => { await api('/api/settings', { method: 'PUT', json: { user_name: e.target.value } }); await loadSettings(); toast('Prénom enregistré'); };
   $$('[data-theme-opt]').forEach((b) => (b.onclick = () => { applyTheme(b.dataset.themeOpt); $$('[data-theme-opt]').forEach((x) => x.setAttribute('aria-pressed', String(x === b))); }));
   $('#feed').onclick = openFeed;
+  $('#logout')?.addEventListener('click', async () => { await api('/auth/logout', { method: 'POST' }); state.me = null; location.hash = '#/connexion'; });
+  if (state.me?.auth) drawGcal();
+  const qp = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const msg = { ok: 'Google Agenda connecté', refuse: 'Accès à l\u2019agenda refusé', compte: 'Connectez l\u2019agenda avec le même compte Google' }[qp.get('agenda')];
+  if (msg) { toast(msg); history.replaceState(null, '', '#/parametres'); }
+  if (qp.get('section') === 'agenda' || qp.get('agenda')) setTimeout(() => $('#gcal')?.scrollIntoView({ block: 'center' }), 50);
   $('#sub')?.addEventListener('click', async (e) => { e.currentTarget.disabled = true; try { await subscribe(); toast('Rappels activés sur cet appareil'); } catch (err) { toast(err.message); } renderSettings(); });
   $('#unsub')?.addEventListener('click', async () => { await unsubscribe(); toast('Rappels désactivés sur cet appareil'); renderSettings(); });
   $('#test')?.addEventListener('click', async () => { const r = await api('/api/push/test', { method: 'POST' }); toast(r.sent ? 'Notification de test envoyée' : "Aucun appareil n'a reçu le test"); });
@@ -911,6 +929,83 @@ async function renderSettings() {
   if (el) el.innerHTML = `<div class="section-title"><h2>Home Assistant</h2><a href="#/capteurs">Capteurs</a></div>
     <div class="ha-card ${!ha.configured ? 'none' : ha.ok ? 'ok' : 'ko'}"><div class="ha-ico">${icon(!ha.configured ? 'sensor' : ha.ok ? 'check-circle' : 'alert')}</div>
     <div><b>${!ha.configured ? 'Non configuré' : ha.ok ? 'Connecté' : 'Injoignable'}</b><span>${!ha.configured ? 'Renseignez HA_URL et HA_TOKEN dans le fichier .env.' : ha.ok ? `Version ${esc(ha.version)}` : esc(ha.error)}</span></div></div>`;
+}
+
+// ---------- Google Agenda (par compte) ----------
+const REMINDER_LABELS = { 0: 'Au moment', 10: '10 min', 30: '30 min', 60: '1 h', 120: '2 h', 180: '3 h', 1440: 'La veille' };
+function drawGcal() {
+  const el = $('#gcal');
+  if (!el || !state.me?.auth) return;
+  const c = state.me.calendar;
+  if (!c.connected) {
+    el.innerHTML = `<div class="gcal-off">
+      <p class="muted" style="margin:0 0 10px">Rosée crée un agenda « Rosée — arrosages » dans votre Google Agenda et le tient à jour : un événement par arrosage prévu, avec les alertes de votre choix. Rosée n'a accès qu'à cet agenda, pas à vos autres rendez-vous.</p>
+      ${c.last_sync_error ? `<div class="hint" style="margin:0 0 10px">${esc(c.last_sync_error)}</div>` : ''}
+      <a class="btn" href="/auth/google/calendar">${icon('calendar')}Connecter Google Agenda</a></div>`;
+    return;
+  }
+  const s = c.settings;
+  el.innerHTML = `<div class="rows">
+      <div class="row"><div class="txt"><b>Heure des arrosages</b><span>Le jour prévu</span></div>
+        <input class="input time-input" type="time" id="g-time" value="${esc(s.time)}" aria-label="Heure de l'événement"></div>
+      <div class="row" style="flex-wrap:wrap"><div class="txt"><b>Durée</b></div>
+        <div class="seg-sm" role="group" aria-label="Durée">${[15, 30, 60].map((d) => `<button type="button" data-dur="${d}" aria-pressed="${s.duration === d}">${d === 60 ? '1 h' : `${d} min`}</button>`).join('')}</div></div>
+      <div class="row col"><div class="txt"><b>Alertes</b><span>Jusqu'à 5, avant l'heure de l'arrosage</span></div>
+        <div class="chips wrap" role="group" aria-label="Alertes">${c.choices.map((m) => `<button type="button" class="chip" data-rem="${m}" aria-pressed="${s.reminders.includes(m)}">${REMINDER_LABELS[m] || `${m} min`}</button>`).join('')}</div></div>
+      <div class="row" style="flex-wrap:wrap"><div class="txt"><b>Type d'alerte</b></div>
+        <div class="seg-sm" role="group" aria-label="Type d'alerte"><button type="button" data-meth="popup" aria-pressed="${s.method === 'popup'}">Notification</button><button type="button" data-meth="email" aria-pressed="${s.method === 'email'}">E-mail</button></div></div>
+      <div class="row"><div class="txt"><b>Synchronisation</b><span class="${c.last_sync_error ? 'err' : ''}">${c.last_sync_error ? esc(c.last_sync_error) : c.last_sync_at ? `Agenda à jour (${esc(relAgo(c.last_sync_at.replace(' ', 'T') + 'Z'))})` : 'En attente…'}</span></div>
+        <button class="btn secondary sm" type="button" id="g-sync">${icon('refresh')}Maintenant</button></div>
+      <div class="row"><div class="txt"><b>Agenda connecté</b><span>${esc(state.me.user.email)}</span></div>
+        <button class="btn danger sm" type="button" id="g-off">Déconnecter</button></div>
+    </div>`;
+  const save = async (patch) => {
+    try { state.me = await api('/api/me/calendar', { method: 'PUT', json: { ...state.me.calendar.settings, ...patch } }); drawGcal(); toast('Alertes enregistrées'); }
+    catch (e) { toast(e.message); }
+  };
+  $('#g-time', el).onchange = (e) => save({ time: e.target.value });
+  $$('[data-dur]', el).forEach((b) => (b.onclick = () => save({ duration: Number(b.dataset.dur) })));
+  $$('[data-meth]', el).forEach((b) => (b.onclick = () => save({ method: b.dataset.meth })));
+  $$('[data-rem]', el).forEach((b) => (b.onclick = () => {
+    const m = Number(b.dataset.rem);
+    const cur = new Set(s.reminders);
+    if (cur.has(m)) cur.delete(m); else if (cur.size >= 5) return toast('5 alertes maximum'); else cur.add(m);
+    save({ reminders: [...cur] });
+  }));
+  $('#g-sync', el).onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    state.me = await api('/api/me/calendar/sync', { method: 'POST' });
+    drawGcal();
+    toast(state.me.calendar.last_sync_error ? 'Synchronisation impossible' : 'Agenda synchronisé');
+  };
+  $('#g-off', el).onclick = () => openSheet(`<div class="sheet-inner">
+    <div class="sheet-head"><h2 id="sheet-title">Déconnecter Google Agenda ?</h2><button class="icon-btn" type="button" data-close aria-label="Fermer">${icon('close')}</button></div>
+    <div class="sheet-body"><p class="muted" style="margin:0">Rosée ne mettra plus votre agenda à jour et son accès sera révoqué.</p>
+      <label class="field" style="display:flex;gap:10px;align-items:center"><input type="checkbox" id="del-cal" checked> <span style="margin:0;font-weight:600">Supprimer aussi l'agenda « Rosée — arrosages »</span></label></div>
+    <div class="sheet-foot" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <button class="btn secondary" type="button" data-close>Annuler</button>
+      <button class="btn solid-danger" type="button" id="g-off-ok">Déconnecter</button></div></div>`, (root) => {
+    $$('[data-close]', root).forEach((b) => (b.onclick = () => sheet.close()));
+    $('#g-off-ok', root).onclick = async () => {
+      state.me = await api('/api/me/calendar/disconnect', { method: 'POST', json: { delete_calendar: $('#del-cal', root).checked } });
+      sheet.close(); drawGcal(); toast('Google Agenda déconnecté');
+    };
+  });
+}
+
+// ---------- Écran de connexion ----------
+function renderLogin() {
+  document.body.classList.add('logged-out');
+  const err = new URLSearchParams(location.hash.split('?')[1] || '').get('erreur');
+  view.innerHTML = `<div class="login">
+    <div class="login-card">
+      <span class="logo-mark big">${icon('plants')}</span>
+      <h1>Rosée</h1>
+      <p class="muted">Vos plantes, leurs arrosages et vos rappels, partagés avec la maison.</p>
+      ${err ? `<div class="hint" role="alert">${esc(err)}</div>` : ''}
+      <a class="btn block" href="/auth/google/login">${icon('link')}Se connecter avec Google</a>
+      <p class="muted small">Seuls les comptes autorisés sur ce serveur peuvent entrer.</p>
+    </div></div>`;
 }
 
 // ---------- Push ----------
@@ -1309,9 +1404,11 @@ function currentRoute() {
   if (h.startsWith('#/calendrier')) return 'calendar';
   if (h.startsWith('#/capteurs')) return 'sensors';
   if (h.startsWith('#/parametres')) return 'settings';
+  if (h.startsWith('#/connexion')) return 'login';
   return 'home';
 }
 async function render() {
+  document.body.classList.remove('logged-out');
   view.classList.remove('flush-top');
   const h = location.hash || '#/';
   const params = new URLSearchParams(h.split('?')[1] || '');
@@ -1321,12 +1418,17 @@ async function render() {
   else if (r === 'calendar') await renderCalendar();
   else if (r === 'sensors') await renderSensors();
   else if (r === 'settings') await renderSettings();
+  else if (r === 'login') {
+    if (state.me?.auth === false || (state.me?.auth && state.me.user)) { location.hash = '#/'; return; }
+    renderLogin(); return;
+  }
   else await renderHome();
   bindAdd();
 }
 
 window.addEventListener('hashchange', async () => {
   if (sheet.open) sheet.close();
+  if (!state.me && currentRoute() !== 'login') { location.reload(); return; }
   await render();
   window.scrollTo(0, 0);
 });
@@ -1343,6 +1445,11 @@ $('#global-q').addEventListener('input', (e) => {
   view.innerHTML = `<div class="skeleton">Chargement…</div>`;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').then((r) => (swReg = r)).catch(() => {});
   try {
+    try { state.me = await api('/api/me'); }
+    catch (e) {
+      if (e.status === 401) { state.me = null; if (currentRoute() !== 'login') location.replace('#/connexion'); renderLogin(); return; }
+      throw e;
+    }
     await Promise.all([loadPlants(), loadSettings()]);
     await render();
     api('/api/ha/status').then(updateSideHA).catch(() => {});
